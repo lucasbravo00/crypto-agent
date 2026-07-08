@@ -54,7 +54,7 @@ def log_dca_purchase(amount_usd: float, price: float, asset: str = "BTC") -> dic
     return purchase
 
 
-def get_dca_summary() -> dict:
+def get_dca_summary(**_ignored) -> dict:
     """Summary of the accumulation phase: total invested, average entry
     price and accumulated quantity. Live valuation is intentionally not
     computed here (that needs the live price, which is another tool) to

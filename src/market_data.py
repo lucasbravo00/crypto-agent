@@ -158,7 +158,7 @@ def get_cycle_metrics(symbol: str = "BTC/USDT") -> dict:
         "weekly_rsi_14": _rsi(w_closes, 14),
     }
 
-def get_current_date() -> dict:
+def get_current_date(**_ignored) -> dict:
     """Return today's real date. The model has no reliable notion of
     'today' on its own — if a report needs a date, it must come from
     this tool, never be guessed from training data."""
@@ -166,7 +166,7 @@ def get_current_date() -> dict:
     today = date.today()
     return {"iso_date": today.isoformat(), "human_readable": today.strftime("%B %d, %Y")}
 
-def get_fear_greed_index() -> dict:
+def get_fear_greed_index(**_ignored) -> dict:
     """Crypto market Fear & Greed index (public source: alternative.me)."""
     def _call():
         resp = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10)
@@ -176,7 +176,7 @@ def get_fear_greed_index() -> dict:
     return {"value": int(data["value"]), "classification": data["value_classification"]}
 
 
-def get_btc_dominance() -> dict:
+def get_btc_dominance(**_ignored) -> dict:
     """BTC dominance over total crypto market cap (CoinGecko, public)."""
     def _call():
         resp = requests.get("https://api.coingecko.com/api/v3/global", timeout=10)
