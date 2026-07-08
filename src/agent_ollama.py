@@ -46,6 +46,7 @@ LOG_PATH = os.path.join(os.path.dirname(__file__), "..", "logs", "agent_ollama_l
 # We pass the real Python functions directly: Ollama builds the schema
 # on its own by reading each function's type hints + docstring.
 TOOL_FUNCTIONS = [
+    market_data.get_current_date,
     market_data.get_price,
     market_data.get_indicators,
     market_data.get_cycle_metrics,
