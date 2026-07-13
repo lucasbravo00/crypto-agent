@@ -276,3 +276,33 @@ def get_cycle_summary(**_ignored) -> dict:
         "has_open_bullet": active is not None,
         "open_bullet_id": active["id"] if active else None,
     }
+
+
+def get_bullet_status(symbol: str = "BTC/USDT") -> dict:
+    """Combined bullet-cycle view for the daily agent report.
+
+    Unlike every other function in this module, this one DOES touch the
+    network: it fetches the current price to compute live P&L when a
+    bullet is open. It exists so the agent needs a single tool call to
+    get both the 30-bullet cycle summary and (if applicable) the open
+    bullet's live numbers, instead of chaining get_cycle_summary +
+    market_data.get_price + check_bullet itself.
+
+    Args:
+        symbol: Trading pair to fetch the current price for if a bullet
+            is open, e.g. "BTC/USDT".
+
+    Returns:
+        The cycle summary dict (see get_cycle_summary), plus an
+        "open_bullet_live" key: None if no bullet is open, otherwise
+        the live check_bullet() result at the current market price.
+    """
+    summary = get_cycle_summary()
+    if not summary["has_open_bullet"]:
+        return {**summary, "open_bullet_live": None}
+
+    from . import market_data  # local import: keeps the rest of this
+    # module network-free and avoids importing ccxt/requests unless a
+    # bullet is actually open.
+    current_price = market_data.get_price(symbol)["last_price"]
+    return {**summary, "open_bullet_live": check_bullet(current_price)}

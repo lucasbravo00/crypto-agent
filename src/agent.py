@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 
 import anthropic
 
-from . import market_data, state, strategy_tools
+from . import bullets, market_data, state, strategy_tools
 
 MODEL = "claude-sonnet-4-6"
 MAX_ITERATIONS = 10  # hard anti-infinite-loop cap
@@ -106,6 +106,22 @@ TOOLS = [
         "description": "Summary of the user's recorded DCA purchases: total invested, accumulated quantity and average entry price.",
         "input_schema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "get_bullet_status",
+        "description": (
+            "Status of the user's 30-bullet leveraged-futures cycle: how "
+            "many bullets used/remaining, closed count, target (tp) wins, "
+            "total realized P&L, and if a bullet is currently open its "
+            "live P&L, distance to target, and distance to approximate "
+            "liquidation at the current market price. These bullets are "
+            "opened and closed MANUALLY by the user on BingX; this tool "
+            "only reports recorded state, it never opens/closes anything."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"symbol": {"type": "string", "default": "BTC/USDT"}},
+        },
+    },
 ]
 
 TOOL_IMPL = {
@@ -117,6 +133,7 @@ TOOL_IMPL = {
     "get_fear_greed_index": lambda **kw: market_data.get_fear_greed_index(),
     "get_btc_dominance": lambda **kw: market_data.get_btc_dominance(),
     "get_dca_summary": lambda **kw: state.get_dca_summary(),
+    "get_bullet_status": lambda **kw: bullets.get_bullet_status(**kw),
 }
 
 REQUIRED_TOOLS = set(TOOL_IMPL.keys()) - {"simulate_bullet_math"}
@@ -124,15 +141,22 @@ REQUIRED_TOOLS = set(TOOL_IMPL.keys()) - {"simulate_bullet_math"}
 def _system_prompt() -> str:
     language = os.environ.get("REPORT_LANGUAGE", "en")
     return f"""You are a crypto strategy assistant agent for a user who:
-- Is in a DCA accumulation phase toward BTC during a bear market.
+- Is in a DCA accumulation phase toward BTC during a bear market, and
+  may separately be running a manual leveraged-futures "bullet" cycle
+  on BingX (up to 30 sequential x5 positions, one at a time, each
+  targeting +15% on the position). You never open, close, or suggest
+  opening/closing any position — every trade is manual, on the
+  exchange, decided by the user alone.
 - Believes the market is approaching a bottom, but you must NOT make
   that call for them.
 
 Your job in this run is to build a brief, objective daily report:
 1. You MUST call every one of these tools before writing your answer:
    get_current_date, get_price, get_indicators, get_cycle_metrics,
-   get_fear_greed_index, get_btc_dominance, get_dca_summary. Do not skip
-   any of them, even if some seem less relevant.
+   get_fear_greed_index, get_btc_dominance, get_dca_summary,
+   get_bullet_status. Do not skip any of them, even if some seem less
+   relevant (e.g. get_bullet_status may report no bullets used yet —
+   state that plainly rather than omitting the section).
 2. NEVER state or imply a date/year from memory. If the report needs a
    date, use only what get_current_date returned.
 3. Summarize the data clearly, without giving buy/sell signals or
@@ -140,10 +164,15 @@ Your job in this run is to build a brief, objective daily report:
    decision belongs to the user. If a metric sits in a historically
    extreme zone you may note that as a historical fact, clarifying it is
    no guarantee about the future.
-4. Close the report with 1-2 neutral lines about which data would be
+4. If get_bullet_status shows an open bullet, report its live P&L,
+   distance to the target price, and distance to the approximate
+   liquidation price as plain facts. NEVER tell the user to close, hold,
+   add margin, or otherwise act on that position — you only report the
+   numbers; the manual decision on BingX is entirely theirs.
+5. Close the report with 1-2 neutral lines about which data would be
    worth watching over the next days (no trading instructions).
 
-Be concise: the final report must not exceed ~150 words, in plain text
+Be concise: the final report must not exceed ~180 words, in plain text
 suitable for an email or short message.
 Write the final report in this language (ISO code): {language}."""
 

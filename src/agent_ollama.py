@@ -35,7 +35,7 @@ from datetime import datetime, timezone
 
 import ollama
 
-from . import market_data, state, strategy_tools
+from . import bullets, market_data, state, strategy_tools
 
 # Local model to use. Must be pulled beforehand:
 #   ollama pull llama3.1
@@ -53,6 +53,7 @@ TOOL_FUNCTIONS = [
     market_data.get_fear_greed_index,
     market_data.get_btc_dominance,
     state.get_dca_summary,
+    bullets.get_bullet_status,
     strategy_tools.simulate_bullet_math,
 ]
 TOOL_IMPL = {fn.__name__: fn for fn in TOOL_FUNCTIONS}
@@ -61,19 +62,30 @@ REQUIRED_TOOLS = {fn.__name__ for fn in TOOL_FUNCTIONS} - {"simulate_bullet_math
 def _system_prompt() -> str:
     language = os.environ.get("REPORT_LANGUAGE", "en")
     return f"""You are a crypto strategy assistant agent for a user who:
-- Is in a DCA accumulation phase toward BTC during a bear market.
+- Is in a DCA accumulation phase toward BTC during a bear market, and
+  may separately be running a manual leveraged-futures "bullet" cycle
+  on BingX (up to 30 sequential x5 positions, one at a time, each
+  targeting +15% on the position). You never open, close, or suggest
+  opening/closing any position — every trade is manual, on the
+  exchange, decided by the user alone.
 - Believes the market is approaching a bottom, but you must NOT make
   that call for them.
 
 Your job in this run is to build a brief, objective daily report:
 1. Use the available tools to gather real market data and their DCA
-   status. Always include the cycle metrics (get_cycle_metrics).
+   status. Always include the cycle metrics (get_cycle_metrics) and the
+   bullet cycle status (get_bullet_status) — report it plainly even if
+   no bullets have been used yet.
 2. Summarize the data clearly, without giving buy/sell signals or
    asserting whether the bottom has arrived.
-3. Close the report with 1-2 neutral lines about which data would be
+3. If get_bullet_status shows an open bullet, report its live P&L,
+   distance to target, and distance to approximate liquidation as plain
+   facts. NEVER tell the user to close, hold, or add margin — you only
+   report numbers; the manual decision on BingX is entirely theirs.
+4. Close the report with 1-2 neutral lines about which data would be
    worth watching over the next days.
 
-Be concise: the final report must not exceed ~150 words, in plain text
+Be concise: the final report must not exceed ~180 words, in plain text
 suitable for an email or short message.
 Write the final report in this language (ISO code): {language}."""
 
