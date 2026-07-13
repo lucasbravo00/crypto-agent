@@ -40,7 +40,12 @@ from . import bullets, market_data, state, strategy_tools
 # Local model to use. Must be pulled beforehand:
 #   ollama pull llama3.1
 MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1")
-MAX_ITERATIONS = 10
+# Higher than agent.py's cap: local models are inconsistent about batching
+# multiple tool calls into one turn (sometimes 5 calls in one iteration,
+# sometimes 1 at a time). With 8 REQUIRED_TOOLS, a one-per-turn run needs
+# more budget than Claude, which batches reliably and rarely needs more
+# than 2-3 iterations.
+MAX_ITERATIONS = 16
 LOG_PATH = os.path.join(os.path.dirname(__file__), "..", "logs", "agent_ollama_log.jsonl")
 
 # We pass the real Python functions directly: Ollama builds the schema
