@@ -1,13 +1,22 @@
-# Crypto Strategy Agent — Phase 1 (DCA + Market Monitor)
+# Crypto Strategy Agent
 
 An LLM tool-calling agent that builds an objective daily report on BTC
-market context and your DCA progress, and delivers it to your mailbox
-(e.g. Outlook), Telegram, or the console. Foundation for Phase 2
-(leveraged "bullet" position tracking).
+market context, your DCA accumulation progress, and (once you're in that
+phase) your manual leveraged "bullet" cycle on BingX — delivered to your
+mailbox (e.g. Outlook), Telegram, or the console.
 
 The agent never trades and never gives buy/sell signals: it gathers
-data, summarizes it, and leaves every decision to the human
-(deliberate human-in-the-loop design).
+data, summarizes it, and leaves every decision to the human (deliberate
+human-in-the-loop design). It supports the user's real strategy, which
+runs entirely outside the code:
+
+1. **DCA phase** (current): accumulate BTC via manual spot purchases
+   during a bear market, recorded with `python main.py buy`.
+2. **Bullet phase** (once the user decides — manually — that a bull
+   market has started): up to 30 sequential x5 leveraged futures
+   positions on BingX, one at a time, each targeting +15% gain on the
+   position. Opened and closed by hand on the exchange; this project
+   only *records* what happened and computes the math/P&L from it.
 
 ## Architecture
 
@@ -18,14 +27,18 @@ src/
                              cycle metrics (200w SMA, Mayer Multiple, drawdown,
                              weekly RSI), fear & greed, BTC dominance
                              (BingX/CoinGecko), all with retry logic
-  strategy_tools.py       -> pure math of a leveraged bullet position
-  state.py                -> stateful tool: records DCA purchases (persistent JSON)
+  strategy_tools.py       -> pure math of a leveraged bullet position (no network)
+  state.py                -> stateful tool: records DCA purchases + bullets (persistent JSON)
+  bullets.py              -> bullet state machine: open -> tracking -> closed_tp/closed_manual;
+                             enforces "one bullet at a time" and the 30-bullet cycle cap in code
   notify.py               -> output dispatcher: console / email / telegram
   email_notifier.py       -> SMTP delivery to your mailbox (e.g. Outlook)
   telegram_notifier.py    -> Telegram delivery (optional)
   agent.py                -> tool-calling loop on the Claude API
   agent_ollama.py         -> the SAME loop on a local model via Ollama
-tests/test_logic.py       -> unit tests for the pure logic (no network, no LLM)
+tests/
+  test_logic.py           -> unit tests for market_data/strategy_tools (no network, no LLM)
+  test_bullets.py         -> unit tests for the bullet state machine (isolated temp state)
 state/                    -> persistent state (auto-created)
 logs/                     -> JSONL trace of every agent decision (auto-created)
 ```
@@ -39,7 +52,15 @@ logs/                     -> JSONL trace of every agent decision (auto-created)
 - **Swappable output channel** (email / telegram / console) without
   touching the agent.
 - **Hard iteration cap** against infinite tool-calling loops, plus tool
-  error handling that never crashes the run.
+  error handling that never crashes the run. The Ollama backend uses a
+  higher cap than Claude's: local models are inconsistent about batching
+  multiple tool calls per turn (sometimes several at once, sometimes one
+  at a time), so it needs more budget to cover the same required tools.
+- **Code-level, not prompt-level, guardrails**: `REQUIRED_TOOLS` blocks a
+  final answer that skipped a mandatory tool, and `bullets.py` raises if
+  you try to open a second bullet while one is active, or exceed the
+  30-bullet cycle. Prompt wording alone ("you MUST call every tool")
+  was tested and found insufficient, even on Claude.
 - **Retries with backoff** on all network calls (public APIs fail
   sporadically).
 - **Structured JSONL logging** of every tool call, its input and its
@@ -67,24 +88,36 @@ cp .env.example .env    # then fill it in
 ## Usage
 
 ```bash
+# --- DCA phase ---
 python main.py buy 50            # record a 50 USD DCA purchase at the current price
 python main.py buy 50 60000      # same, with a manual price
 python main.py dca               # DCA summary (no LLM)
 python main.py metrics           # all raw market/cycle metrics (no LLM)
-python main.py bullet 500        # math of a 500 USD x5 bullet at the current price
+python main.py bullet 500        # math of a 500 USD x5 bullet at the current price (no state)
+
+# --- Bullet phase: tracking manual leveraged positions on BingX ---
+# These commands NEVER touch the exchange. They only record what you
+# already did manually on BingX and compute the P&L from that.
+python main.py bullet-open 500           # record an open x5 bullet at the CURRENT price
+python main.py bullet-open 500 60000 5 15 # same, explicit entry / leverage / target %
+python main.py bullet-status             # live P&L of the open bullet (no notification)
+python main.py bullet-check              # same, and notify if target hit / near liquidation
+python main.py bullet-close tp           # close the bullet at the CURRENT price (outcome tp/manual)
+python main.py bullet-history            # summary of the 30-bullet cycle
+
+# --- Agent + tests ---
 python main.py report            # run the full agent and deliver the report
 python -m pytest tests/ -v       # unit tests for the pure logic
 ```
 
 ## Roadmap
 
-1. **Phase 2 — bullet management**: a per-bullet state machine
-   (`pending -> open -> tracking -> closed`), live P&L vs the target,
-   alerts when approaching it.
-2. **Scheduling**: cron/scheduler for the daily report.
-3. **Multi-agent**: a market-analyst agent + a bullet-manager agent,
+1. **Scheduling**: cron/launchd for the daily report and for a
+   higher-frequency `bullet-check` (liquidation risk needs faster
+   reaction than once a day).
+2. **Multi-agent**: a market-analyst agent + a bullet-manager agent,
    coordinated.
-4. **Memory**: compare against previous reports to detect regime changes.
+3. **Memory**: compare against previous reports to detect regime changes.
 
 ## Disclaimer
 
