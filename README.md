@@ -110,14 +110,34 @@ python main.py report            # run the full agent and deliver the report
 python -m pytest tests/ -v       # unit tests for the pure logic
 ```
 
+## Automation (macOS launchd)
+
+Two LaunchAgents keep this running without manual invocation. They live
+in `~/Library/LaunchAgents/` (system config, not part of this repo) and
+write their run logs to `logs/launchd_*.out.log` / `.err.log`.
+
+| Job | Schedule | Runs |
+|---|---|---|
+| `com.cryptoagent.dailyreport` | daily at 08:00 | `python main.py report` (full LLM report, delivered via `NOTIFY_CHANNEL`) |
+| `com.cryptoagent.bulletcheck` | every 15 minutes | `python main.py bullet-check` (no LLM; only notifies on target/liquidation alerts) |
+
+```bash
+launchctl list | grep cryptoagent                                 # confirm both are loaded
+launchctl kickstart -k gui/$(id -u)/com.cryptoagent.dailyreport   # force a run right now
+launchctl bootout gui/$(id -u)/com.cryptoagent.bulletcheck        # disable a job
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.cryptoagent.bulletcheck.plist  # re-enable it
+```
+
+**Caveat**: with `LLM_BACKEND=ollama`, the Ollama app must be running in
+the background for `dailyreport` to work — if the Mac is off (asleep is
+fine; launchd catches up missed runs on wake) or Ollama isn't running at
+08:00, check `logs/launchd_dailyreport.err.log` for the failure.
+
 ## Roadmap
 
-1. **Scheduling**: cron/launchd for the daily report and for a
-   higher-frequency `bullet-check` (liquidation risk needs faster
-   reaction than once a day).
-2. **Multi-agent**: a market-analyst agent + a bullet-manager agent,
+1. **Multi-agent**: a market-analyst agent + a bullet-manager agent,
    coordinated.
-3. **Memory**: compare against previous reports to detect regime changes.
+2. **Memory**: compare against previous reports to detect regime changes.
 
 ## Disclaimer
 
