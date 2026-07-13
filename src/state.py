@@ -17,20 +17,37 @@ from datetime import datetime, timezone
 
 STATE_PATH = os.path.join(os.path.dirname(__file__), "..", "state", "portfolio_state.json")
 
-DEFAULT_STATE = {
-    "phase": "dca",
-    "dca_purchases": [],   # list of {date, amount_usd, price, asset}
-    "bullets": [],         # used in phase 2 (kept ready)
-    "notes": [],
-}
+def _default_state() -> dict:
+    """Return a FRESH default state on every call.
+
+    This must be a factory, not a module-level constant: a module-level
+    dict would share its nested lists ("dca_purchases", "bullets",
+    "notes") across every ``.copy()`` (a shallow copy aliases them), so
+    two supposedly independent "fresh state" instances would silently
+    leak entries into each other. Building a new dict each call gives
+    every caller its own lists.
+    """
+    return {
+        "phase": "dca",
+        "dca_purchases": [],   # list of {date, amount_usd, price, asset}
+        "bullets": [],         # used in phase 2 (see src/bullets.py)
+        "notes": [],
+    }
 
 
 def load_state() -> dict:
     if not os.path.exists(STATE_PATH):
-        save_state(DEFAULT_STATE)
-        return DEFAULT_STATE.copy()
+        state = _default_state()
+        save_state(state)
+        return state
     with open(STATE_PATH, "r") as f:
-        return json.load(f)
+        state = json.load(f)
+    # Defensive merge: a state file written by an older schema may lack
+    # keys added later (e.g. "bullets"). Backfill any missing top-level
+    # key from a fresh default so downstream code can rely on them.
+    for key, default_value in _default_state().items():
+        state.setdefault(key, default_value)
+    return state
 
 
 def save_state(state: dict) -> None:
