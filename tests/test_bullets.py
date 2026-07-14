@@ -2,9 +2,13 @@
 Tests for the bullet state machine (src/bullets.py). No network, no LLM.
 Run with:  python -m pytest tests/ -v
 
-Every test is isolated from the user's real state file: the autouse
-fixture monkeypatches state.STATE_PATH to a fresh temp file per test, so
-running the suite never reads or writes state/portfolio_state.json.
+Every test is isolated from the user's real state: the autouse fixture (1)
+monkeypatches state.STATE_PATH to a fresh temp file per test, and (2)
+force-disables the Supabase backend by unsetting SUPABASE_URL/SUPABASE_KEY
+for the duration of the test, regardless of what's in the developer's
+shell environment or .env. Without step (2), a developer who has sourced
+their real .env could have tests silently write test data into their
+production Supabase project instead of the local temp file.
 """
 import math
 import pytest
@@ -15,9 +19,12 @@ from src import bullets
 
 @pytest.fixture(autouse=True)
 def isolated_state(tmp_path, monkeypatch):
-    """Point state persistence at a per-test temp file."""
+    """Point state persistence at a per-test temp file and force the local
+    JSON backend (never Supabase), no matter the ambient environment."""
     temp_state = tmp_path / "portfolio_state.json"
     monkeypatch.setattr(state_module, "STATE_PATH", str(temp_state))
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_KEY", raising=False)
     yield
 
 

@@ -28,9 +28,11 @@ src/
                              weekly RSI), fear & greed, BTC dominance
                              (BingX/CoinGecko), all with retry logic
   strategy_tools.py       -> pure math of a leveraged bullet position (no network)
-  state.py                -> stateful tool: records DCA purchases + bullets (persistent JSON)
+  state.py                -> stateful tool: DCA purchases + bullets, dual backend (see below)
   bullets.py              -> bullet state machine: open -> tracking -> closed_tp/closed_manual;
                              enforces "one bullet at a time" and the 30-bullet cycle cap in code
+                             (also enforced at the DB level when using Supabase)
+  db.py                   -> thin Supabase client wrapper (optional; see Setup)
   notify.py               -> output dispatcher: console / email / telegram
   email_notifier.py       -> SMTP delivery to your mailbox (e.g. Outlook)
   telegram_notifier.py    -> Telegram delivery (optional)
@@ -38,9 +40,11 @@ src/
   agent_ollama.py         -> the SAME loop on a local model via Ollama
 tests/
   test_logic.py           -> unit tests for market_data/strategy_tools (no network, no LLM)
-  test_bullets.py         -> unit tests for the bullet state machine (isolated temp state)
-state/                    -> persistent state (auto-created)
+  test_bullets.py         -> unit tests for the bullet state machine (isolated temp state,
+                             Supabase force-disabled regardless of the ambient environment)
+state/                    -> local JSON state, used only when Supabase isn't configured
 logs/                     -> JSONL trace of every agent decision (auto-created)
+supabase/schema.sql       -> run once in the Supabase SQL Editor to create the tables
 ```
 
 ## Design decisions
@@ -67,13 +71,25 @@ logs/                     -> JSONL trace of every agent decision (auto-created)
   result, so any report can be audited after the fact.
 - **Human-in-the-loop by design**: the agent informs; it never executes
   trades or emits signals.
+- **Dual storage backend, chosen at call time**: if `SUPABASE_URL` /
+  `SUPABASE_KEY` are set, DCA purchases and bullets live in Postgres
+  (Supabase) instead of the local JSON file — this is what lets state be
+  shared between your Mac and GitHub Actions. If unset, everything falls
+  back to the JSON file exactly as in the original single-machine design.
+  Tests force-disable Supabase regardless of the ambient environment, so
+  they never touch the real database.
 
 ## Setup
 
 ```bash
+python3 -m venv .venv && source .venv/bin/activate   # isolated env for this project
 pip install -r requirements.txt
 cp .env.example .env    # then fill it in
 ```
+
+A virtual environment matters here specifically because `supabase-py`
+needs a `websockets` version that can conflict with other unrelated
+Python projects on the same machine if installed globally.
 
 - **Claude backend**: get an API key at https://console.anthropic.com and
   set `ANTHROPIC_API_KEY`.
@@ -84,6 +100,11 @@ cp .env.example .env    # then fill it in
   SMTP provider (Gmail app password, or Brevo's free tier) *to* your
   mailbox. See `.env.example`. Or keep `NOTIFY_CHANNEL=console` for zero
   setup.
+- **Supabase (optional)**: create a free project at https://supabase.com,
+  run `supabase/schema.sql` once in its SQL Editor, then set
+  `SUPABASE_URL` and `SUPABASE_KEY` (the `service_role` key) in `.env`.
+  Skip this entirely to keep using the local JSON file — nothing else
+  changes.
 
 ## Usage
 

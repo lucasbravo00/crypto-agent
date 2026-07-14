@@ -3,11 +3,8 @@ name: Daily crypto report
 # Runs the agent's daily report without depending on any local machine being
 # on. Uses a local Ollama model (free) instead of the Claude API.
 #
-# NOTE: this workflow does NOT have access to state/portfolio_state.json
-# (it's gitignored, never pushed to the repo), so the DCA/bullets sections
-# of the report will show zero here. Until state moves to a hosted store
-# (planned: Supabase), the report with your real state keeps being
-# generated locally via launchd on your Mac.
+# State (DCA purchases, bullets) lives in Supabase, shared with the local
+# launchd-driven run on your Mac -- both see the same real data.
 
 on:
   schedule:
@@ -66,4 +63,6 @@ jobs:
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python main.py report

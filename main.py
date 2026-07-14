@@ -37,7 +37,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from src import state, notify  # noqa: E402
+from src import state, notify, db  # noqa: E402
 
 
 def _get_agent_module():
@@ -57,6 +57,51 @@ def cmd_report():
     agent_module = _get_agent_module()
     text = agent_module.run_daily_report(symbol=symbol)
     notify.notify(text, subject_prefix=f"Report {symbol}")
+    _record_snapshot(symbol, text)
+
+
+def _record_snapshot(symbol: str, report_text: str) -> None:
+    """Best-effort: push a structured snapshot to Supabase (if configured)
+    for the future dashboard's historical charts. Re-fetches the same
+    metrics the agent's tools already gathered (cheap, public, read-only
+    APIs) because the agent's free-text report isn't structured data.
+    Never raises -- a snapshot failure must not break report delivery."""
+    if not db.is_enabled():
+        return
+    try:
+        from src import market_data, bullets
+        price = market_data.get_price(symbol)
+        indicators = market_data.get_indicators(symbol)
+        cycle = market_data.get_cycle_metrics(symbol)
+        fg = market_data.get_fear_greed_index()
+        dom = market_data.get_btc_dominance()
+        dca = state.get_dca_summary()
+        bullet_cycle = bullets.get_cycle_summary()
+        state.record_snapshot({
+            "price": price["last_price"],
+            "change_24h_pct": price["change_24h_pct"],
+            "sma50": indicators["sma50"],
+            "sma200": indicators["sma200"],
+            "rsi14": indicators["rsi_14"],
+            "sma200w": cycle["sma_200w"],
+            "mayer_multiple": cycle["mayer_multiple"],
+            "drawdown_from_high_pct": cycle["drawdown_from_high_pct"],
+            "weekly_rsi14": cycle["weekly_rsi_14"],
+            "fear_greed_value": fg["value"],
+            "fear_greed_classification": fg["classification"],
+            "btc_dominance_pct": dom["btc_dominance_pct"],
+            "total_invested_usd": dca["total_invested_usd"],
+            "total_qty_btc": dca["total_qty_btc"],
+            "avg_entry_price": dca["avg_entry_price"],
+            "bullets_used": bullet_cycle["bullets_used"],
+            "bullets_remaining": bullet_cycle["bullets_remaining"],
+            "tp_wins": bullet_cycle["tp_wins"],
+            "total_realized_pnl_usd": bullet_cycle["total_realized_pnl_usd"],
+            "report_text": report_text,
+        })
+        print("Snapshot saved to Supabase ✅")
+    except Exception as exc:
+        print(f"⚠️ Could not save snapshot to Supabase: {exc}")
 
 
 def cmd_buy(args: list[str]):

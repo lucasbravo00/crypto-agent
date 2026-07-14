@@ -1,21 +1,31 @@
 """
 state.py
 ---------
-Persistent state management for the agent. Deliberately simple (a JSON
-file on disk) to make the core idea obvious: an agent that operates over
-time needs to "remember" which phase it is in and what happened before,
-just like a streaming job needs its state checkpoint.
+Persistent state management for the agent: DCA purchases and leveraged
+bullets (see src/bullets.py).
 
-Possible strategy states (state["phase"]):
-  - "dca"     -> accumulation phase toward BTC (implemented now)
-  - "bullets" -> phase of 30 leveraged futures bullets (next milestone)
+Dual backend, chosen at CALL TIME (not import time) by checking
+db.is_enabled(): if SUPABASE_URL / SUPABASE_KEY are set, every read/write
+goes to Supabase (Postgres) instead of the local JSON file. This is what
+lets state be shared between your Mac and GitHub Actions -- a local run
+and a CI run both see the same DCA purchases and bullet history. If
+Supabase isn't configured (e.g. in tests, which explicitly unset those
+env vars), everything falls back to the JSON file exactly as in Phase 1/2.
+
+Every function below returns the same dict/list shape regardless of which
+backend served it, so callers (bullets.py, main.py, the agent tools) never
+need to know which one is active.
 """
 from __future__ import annotations
 import json
 import os
 from datetime import datetime, timezone
+from typing import Optional
+
+from . import db
 
 STATE_PATH = os.path.join(os.path.dirname(__file__), "..", "state", "portfolio_state.json")
+
 
 def _default_state() -> dict:
     """Return a FRESH default state on every call.
@@ -36,6 +46,9 @@ def _default_state() -> dict:
 
 
 def load_state() -> dict:
+    """Local-JSON-only. Supabase-backed reads go through get_dca_purchases()
+    / get_bullets() instead, which is why bullets.py no longer calls this
+    directly."""
     if not os.path.exists(STATE_PATH):
         state = _default_state()
         save_state(state)
@@ -56,19 +69,48 @@ def save_state(state: dict) -> None:
         json.dump(state, f, indent=2)
 
 
-def log_dca_purchase(amount_usd: float, price: float, asset: str = "BTC") -> dict:
-    """Record a DCA purchase. This is a tool with a side effect (it
-    writes state), unlike the read-only tools in market_data.py."""
+# --- DCA purchases -----------------------------------------------------
+
+def get_dca_purchases() -> list[dict]:
+    if db.is_enabled():
+        client = db.get_client()
+        rows = (
+            client.table("dca_purchases")
+            .select("*")
+            .order("purchased_at")
+            .execute()
+            .data
+        )
+        for row in rows:
+            row.setdefault("date", row.get("purchased_at"))
+        return rows
+    return load_state()["dca_purchases"]
+
+
+def insert_dca_purchase(amount_usd: float, price: float, asset: str = "BTC") -> dict:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if db.is_enabled():
+        client = db.get_client()
+        row = {
+            "purchased_at": now_iso,
+            "amount_usd": amount_usd,
+            "price": price,
+            "asset": asset,
+        }
+        result = client.table("dca_purchases").insert(row).execute().data[0]
+        result.setdefault("date", result.get("purchased_at", now_iso))
+        return result
     state = load_state()
-    purchase = {
-        "date": datetime.now(timezone.utc).isoformat(),
-        "amount_usd": amount_usd,
-        "price": price,
-        "asset": asset,
-    }
+    purchase = {"date": now_iso, "amount_usd": amount_usd, "price": price, "asset": asset}
     state["dca_purchases"].append(purchase)
     save_state(state)
     return purchase
+
+
+def log_dca_purchase(amount_usd: float, price: float, asset: str = "BTC") -> dict:
+    """Record a DCA purchase. This is a tool with a side effect (it
+    writes state), unlike the read-only tools in market_data.py."""
+    return insert_dca_purchase(amount_usd, price, asset)
 
 
 def get_dca_summary(**_ignored) -> dict:
@@ -76,15 +118,90 @@ def get_dca_summary(**_ignored) -> dict:
     price and accumulated quantity. Live valuation is intentionally not
     computed here (that needs the live price, which is another tool) to
     keep each function single-responsibility."""
-    state = load_state()
-    purchases = state["dca_purchases"]
+    purchases = get_dca_purchases()
     total_usd = sum(p["amount_usd"] for p in purchases)
     total_qty = sum(p["amount_usd"] / p["price"] for p in purchases) if purchases else 0
     avg_price = (total_usd / total_qty) if total_qty else None
     return {
-        "phase": state["phase"],
+        "phase": "dca",  # not yet a togglable setting; see bullets cycle status for phase 2
         "num_purchases": len(purchases),
         "total_invested_usd": round(total_usd, 2),
         "total_qty_btc": round(total_qty, 8),
         "avg_entry_price": round(avg_price, 2) if avg_price else None,
     }
+
+
+# --- Bullets -------------------------------------------------------------
+# "id" here always means the bullet's position in the 30-bullet cycle
+# (1..30), NOT a database primary key -- bullets.py's "one bullet at a
+# time" logic and tests depend on that meaning staying stable across
+# backends. The Supabase table's own identity column is never exposed.
+
+def get_bullets() -> list[dict]:
+    if db.is_enabled():
+        client = db.get_client()
+        rows = (
+            client.table("bullets")
+            .select("*")
+            .order("bullet_number")
+            .execute()
+            .data
+        )
+        for row in rows:
+            row["id"] = row["bullet_number"]
+        return rows
+    return load_state()["bullets"]
+
+
+def insert_bullet(bullet: dict) -> dict:
+    """Insert a new bullet, assigning it the next cycle position (current
+    count + 1) as its "id". Backend-agnostic."""
+    if db.is_enabled():
+        client = db.get_client()
+        existing = client.table("bullets").select("bullet_number").execute().data
+        bullet_number = len(existing) + 1
+        row = {**bullet, "bullet_number": bullet_number}
+        result = client.table("bullets").insert(row).execute().data[0]
+        result["id"] = result["bullet_number"]
+        return result
+    state = load_state()
+    bullet_number = len(state["bullets"]) + 1
+    record = {**bullet, "id": bullet_number}
+    state["bullets"].append(record)
+    save_state(state)
+    return record
+
+
+def update_bullet(bullet_id: int, fields: dict) -> dict:
+    """Update the bullet at cycle position ``bullet_id`` (see get_bullets
+    docstring) and return the updated record."""
+    if db.is_enabled():
+        client = db.get_client()
+        result = (
+            client.table("bullets")
+            .update(fields)
+            .eq("bullet_number", bullet_id)
+            .execute()
+            .data[0]
+        )
+        result["id"] = result["bullet_number"]
+        return result
+    state = load_state()
+    for b in state["bullets"]:
+        if b["id"] == bullet_id:
+            b.update(fields)
+            save_state(state)
+            return b
+    raise RuntimeError(f"Bullet {bullet_id} not found")
+
+
+# --- Daily snapshots (Supabase-only; no local-file equivalent) ---------
+
+def record_snapshot(fields: dict) -> Optional[dict]:
+    """Persist a daily_snapshots row for the future dashboard's historical
+    charts. No-op (returns None) if Supabase isn't configured -- there is
+    intentionally no local-JSON equivalent for this table."""
+    if not db.is_enabled():
+        return None
+    client = db.get_client()
+    return client.table("daily_snapshots").insert(fields).execute().data[0]

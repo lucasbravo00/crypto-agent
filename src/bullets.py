@@ -19,9 +19,12 @@ Bullet lifecycle (state machine):
 - "tracking" : has been checked at least once (see check_bullet).
 - "closed_*" : terminal; the slot is free again for the next bullet.
 
-Persistence lives in state.py (state["bullets"]). The position math is
-NOT re-derived here: we reuse strategy_tools.simulate_bullet_math() so
-there is a single source of truth for target/liquidation prices.
+Persistence goes through state.py's get_bullets()/insert_bullet()/
+update_bullet(), which transparently route to Supabase or the local JSON
+file depending on configuration -- this module doesn't know or care which.
+The position math is NOT re-derived here: we reuse
+strategy_tools.simulate_bullet_math() so there is a single source of
+truth for target/liquidation prices.
 """
 from __future__ import annotations
 
@@ -45,13 +48,9 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _find_active_bullet(state: dict) -> dict | None:
-    """Return the (mutable) active bullet record inside ``state``, or None.
-
-    Returns the actual dict stored in state["bullets"], so mutating it
-    and then calling state_module.save_state(state) persists the change.
-    """
-    for bullet in state["bullets"]:
+def _find_active_bullet(bullets: list[dict]) -> dict | None:
+    """Return the active bullet in ``bullets`` (open or tracking), or None."""
+    for bullet in bullets:
         if bullet["status"] in ACTIVE_STATUSES:
             return bullet
     return None
@@ -68,7 +67,9 @@ def open_bullet(
     The "one bullet at a time" rule is enforced here in code: if a bullet
     is already open or tracking, this raises instead of silently allowing
     a second concurrent position. The 30-bullet cycle cap is enforced the
-    same way.
+    same way. (When the Supabase backend is active, a partial unique index
+    on the bullets table enforces the same rule at the database level too
+    -- defense in depth.)
 
     Args:
         collateral_usd: Margin posted as collateral, in USD.
@@ -84,9 +85,9 @@ def open_bullet(
         RuntimeError: If a bullet is already active, or the 30-bullet
             cycle is already full.
     """
-    state = state_module.load_state()
+    bullets = state_module.get_bullets()
 
-    active = _find_active_bullet(state)
+    active = _find_active_bullet(bullets)
     if active is not None:
         raise RuntimeError(
             f"A bullet is already active (id={active['id']}, "
@@ -94,7 +95,7 @@ def open_bullet(
             "(one bullet at a time)."
         )
 
-    if len(state["bullets"]) >= MAX_BULLETS:
+    if len(bullets) >= MAX_BULLETS:
         raise RuntimeError(
             f"Cycle is full: {MAX_BULLETS} bullets already used."
         )
@@ -107,8 +108,7 @@ def open_bullet(
         target_position_gain_pct=target_position_gain_pct,
     )
 
-    bullet = {
-        "id": len(state["bullets"]) + 1,
+    bullet_fields = {
         "status": "open",
         "collateral_usd": collateral_usd,
         "entry_price": entry_price,
@@ -125,15 +125,12 @@ def open_bullet(
         "notes": None,
     }
 
-    state["bullets"].append(bullet)
-    state_module.save_state(state)
-    return bullet
+    return state_module.insert_bullet(bullet_fields)
 
 
 def get_open_bullet(**_ignored) -> dict | None:
     """Return the currently active (open/tracking) bullet, or None."""
-    state = state_module.load_state()
-    return _find_active_bullet(state)
+    return _find_active_bullet(state_module.get_bullets())
 
 
 def check_bullet(current_price: float) -> dict:
@@ -159,15 +156,13 @@ def check_bullet(current_price: float) -> dict:
     if current_price <= 0:
         raise ValueError("current_price must be > 0")
 
-    state = state_module.load_state()
-    bullet = _find_active_bullet(state)
+    bullet = _find_active_bullet(state_module.get_bullets())
     if bullet is None:
         raise RuntimeError("No active bullet to check.")
 
     # Side effect: first check moves the bullet from open to tracking.
     if bullet["status"] == "open":
-        bullet["status"] = "tracking"
-        state_module.save_state(state)
+        bullet = state_module.update_bullet(bullet["id"], {"status": "tracking"})
 
     entry_price = bullet["entry_price"]
     leverage = bullet["leverage"]
@@ -228,8 +223,7 @@ def close_bullet(outcome: str, closing_price: float, notes: str | None = None) -
     if closing_price <= 0:
         raise ValueError("closing_price must be > 0")
 
-    state = state_module.load_state()
-    bullet = _find_active_bullet(state)
+    bullet = _find_active_bullet(state_module.get_bullets())
     if bullet is None:
         raise RuntimeError("No active bullet to close.")
 
@@ -239,15 +233,14 @@ def close_bullet(outcome: str, closing_price: float, notes: str | None = None) -
     position_gain_pct = price_move_pct * leverage
     realized_pnl_usd = bullet["collateral_usd"] * position_gain_pct / 100
 
-    bullet["status"] = "closed_tp" if outcome == "tp" else "closed_manual"
-    bullet["outcome"] = outcome
-    bullet["closing_price"] = closing_price
-    bullet["closed_at"] = _now_iso()
-    bullet["realized_pnl_usd"] = round(realized_pnl_usd, 2)
-    bullet["notes"] = notes
-
-    state_module.save_state(state)
-    return bullet
+    return state_module.update_bullet(bullet["id"], {
+        "status": "closed_tp" if outcome == "tp" else "closed_manual",
+        "outcome": outcome,
+        "closing_price": closing_price,
+        "closed_at": _now_iso(),
+        "realized_pnl_usd": round(realized_pnl_usd, 2),
+        "notes": notes,
+    })
 
 
 def get_cycle_summary(**_ignored) -> dict:
@@ -258,13 +251,12 @@ def get_cycle_summary(**_ignored) -> dict:
         are closed, how many were target (tp) wins, the total realized
         P&L, and whether a bullet is currently open.
     """
-    state = state_module.load_state()
-    bullets = state["bullets"]
+    bullets = state_module.get_bullets()
 
     closed = [b for b in bullets if b["status"] in CLOSED_STATUSES]
     tp_wins = [b for b in closed if b["status"] == "closed_tp"]
     total_realized_pnl = sum(b["realized_pnl_usd"] or 0 for b in closed)
-    active = _find_active_bullet(state)
+    active = _find_active_bullet(bullets)
 
     return {
         "max_bullets": MAX_BULLETS,
