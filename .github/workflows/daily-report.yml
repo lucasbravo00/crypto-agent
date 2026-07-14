@@ -1,0 +1,69 @@
+name: Daily crypto report
+
+# Runs the agent's daily report without depending on any local machine being
+# on. Uses a local Ollama model (free) instead of the Claude API.
+#
+# NOTE: this workflow does NOT have access to state/portfolio_state.json
+# (it's gitignored, never pushed to the repo), so the DCA/bullets sections
+# of the report will show zero here. Until state moves to a hosted store
+# (planned: Supabase), the report with your real state keeps being
+# generated locally via launchd on your Mac.
+
+on:
+  schedule:
+    # 11:00 UTC = 08:00 Argentina time (UTC-3)
+    - cron: "0 11 * * *"
+  workflow_dispatch: {} # lets you trigger a manual test run from the Actions tab
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30 # CPU-only inference can be slow; fail fast instead of hanging
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Cache Ollama models
+        uses: actions/cache@v4
+        with:
+          path: ~/.ollama
+          key: ollama-models-${{ vars.OLLAMA_MODEL || 'llama3.1' }}
+
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/install.sh | sh
+
+      - name: Start Ollama server
+        run: |
+          ollama serve &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:11434/ && break
+            sleep 1
+          done
+
+      - name: Pull the model (no-op if already cached)
+        run: ollama pull "${{ vars.OLLAMA_MODEL || 'llama3.1' }}"
+
+      - name: Run the daily report
+        env:
+          LLM_BACKEND: ollama
+          OLLAMA_MODEL: ${{ vars.OLLAMA_MODEL || 'llama3.1' }}
+          REPORT_LANGUAGE: ${{ vars.REPORT_LANGUAGE || 'en' }}
+          NOTIFY_CHANNEL: ${{ vars.NOTIFY_CHANNEL || 'console' }}
+          SYMBOL: ${{ vars.SYMBOL || 'BTC/USDT' }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python main.py report
