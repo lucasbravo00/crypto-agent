@@ -154,6 +154,31 @@ the background for `dailyreport` to work — if the Mac is off (asleep is
 fine; launchd catches up missed runs on wake) or Ollama isn't running at
 08:00, check `logs/launchd_dailyreport.err.log` for the failure.
 
+## Web dashboard
+
+`dashboard/index.html` is a single, build-step-free web page (Supabase JS +
+Chart.js from CDNs) that reads the Supabase data and shows status cards, a
+yesterday-vs-today comparison, time-series charts (price, Fear & Greed,
+Mayer Multiple, distance to the 200-week SMA), the DCA and bullet tables,
+and the latest generated report. It only reads and renders — it never
+places or suggests trades.
+
+Security: the page uses the **anon** key (safe to expose — it's gated by
+Row Level Security). Run `supabase/security.sql` once to enable RLS +
+read-only policies, then in the Supabase dashboard disable public sign-ups
+and create your single Auth user. Logged out, the anon key can read
+nothing; only your account sees the data. Never put the `service_role`
+key in the frontend.
+
+Preview locally:
+
+```bash
+python3 -m http.server 4173 --directory dashboard   # then open http://localhost:4173
+```
+
+Deploy (free): host the `dashboard/` folder as a static site on Vercel or
+Netlify (no build command; output/root directory = `dashboard`).
+
 ## Roadmap
 
 1. **Multi-agent**: a market-analyst agent + a bullet-manager agent,

@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Crypto Agent · Dashboard</title>
+
+  <!-- Supabase JS SDK and Chart.js, both from public CDNs (no build step). -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+
+  <style>
+    :root {
+      --bg: #0e1116;
+      --panel: #171b22;
+      --panel-2: #1e242d;
+      --border: #2a313c;
+      --text: #e6e9ef;
+      --muted: #8b94a3;
+      --accent: #f7931a;      /* bitcoin orange */
+      --green: #3fb950;
+      --red: #f85149;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--accent); }
+
+    /* --- Login --- */
+    #login {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .login-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 32px;
+      width: 100%;
+      max-width: 360px;
+    }
+    .login-card h1 { margin: 0 0 4px; font-size: 20px; }
+    .login-card p { margin: 0 0 24px; color: var(--muted); font-size: 14px; }
+    .login-card input {
+      width: 100%;
+      padding: 12px 14px;
+      margin-bottom: 12px;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 15px;
+    }
+    .login-card button, .btn {
+      width: 100%;
+      padding: 12px;
+      background: var(--accent);
+      color: #000;
+      border: none;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .login-card button:disabled { opacity: 0.6; cursor: default; }
+    .error { color: var(--red); font-size: 13px; margin-top: 10px; min-height: 18px; }
+
+    /* --- Dashboard shell --- */
+    #dashboard { display: none; max-width: 1100px; margin: 0 auto; padding: 20px; }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    header h1 { font-size: 20px; margin: 0; }
+    header .updated { color: var(--muted); font-size: 13px; }
+    .logout {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 7px 14px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      width: auto;
+    }
+
+    section { margin-top: 28px; }
+    section h2 { font-size: 15px; color: var(--muted); text-transform: uppercase;
+                 letter-spacing: 0.05em; margin: 0 0 12px; font-weight: 600; }
+
+    /* Cards grid */
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .card .label { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+    .card .value { font-size: 22px; font-weight: 700; }
+    .card .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    .pos { color: var(--green); }
+    .neg { color: var(--red); }
+
+    /* Charts */
+    .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+    .chart-box {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .chart-box h3 { margin: 0 0 12px; font-size: 14px; font-weight: 600; }
+
+    /* Tables */
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
+    .table-wrap { background: var(--panel); border: 1px solid var(--border);
+                  border-radius: 12px; overflow-x: auto; }
+    .badge { padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; }
+    .badge.open, .badge.tracking { background: rgba(247,147,26,0.15); color: var(--accent); }
+    .badge.closed_tp { background: rgba(63,185,80,0.15); color: var(--green); }
+    .badge.closed_manual { background: rgba(139,148,163,0.15); color: var(--muted); }
+
+    /* Report text */
+    .report-text {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      white-space: pre-wrap;
+      line-height: 1.6;
+      font-size: 14px;
+    }
+    .empty { color: var(--muted); font-size: 14px; padding: 16px; }
+    .disclaimer { color: var(--muted); font-size: 12px; margin-top: 32px;
+                  text-align: center; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <!-- ============ LOGIN ============ -->
+  <div id="login">
+    <form class="login-card" id="login-form">
+      <h1>Crypto Agent</h1>
+      <p>Iniciá sesión para ver tu dashboard.</p>
+      <input type="email" id="email" placeholder="Email" autocomplete="username" required />
+      <input type="password" id="password" placeholder="Contraseña" autocomplete="current-password" required />
+      <button type="submit" id="login-btn">Entrar</button>
+      <div class="error" id="login-error"></div>
+    </form>
+  </div>
+
+  <!-- ============ DASHBOARD ============ -->
+  <div id="dashboard">
+    <header>
+      <div>
+        <h1>Crypto Agent · Dashboard</h1>
+        <div class="updated" id="last-updated"></div>
+      </div>
+      <button class="logout" id="logout-btn">Cerrar sesión</button>
+    </header>
+
+    <section>
+      <h2>Estado actual</h2>
+      <div class="cards" id="status-cards"></div>
+    </section>
+
+    <section id="compare-section">
+      <h2>Ayer vs hoy</h2>
+      <div class="cards" id="compare-cards"></div>
+    </section>
+
+    <section>
+      <h2>Series de tiempo</h2>
+      <div class="chart-grid">
+        <div class="chart-box"><h3>Precio BTC (USD)</h3><canvas id="chart-price"></canvas></div>
+        <div class="chart-box"><h3>Fear &amp; Greed Index</h3><canvas id="chart-fg"></canvas></div>
+        <div class="chart-box"><h3>Mayer Multiple</h3><canvas id="chart-mayer"></canvas></div>
+        <div class="chart-box"><h3>Distancia a SMA 200 semanas (%)</h3><canvas id="chart-sma200w"></canvas></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Compras DCA</h2>
+      <div class="table-wrap" id="dca-table"></div>
+    </section>
+
+    <section>
+      <h2>Ciclo de balas</h2>
+      <div class="table-wrap" id="bullets-table"></div>
+    </section>
+
+    <section>
+      <h2>Último informe generado</h2>
+      <div class="report-text" id="report-text"></div>
+    </section>
+
+    <div class="disclaimer">
+      Este dashboard solo muestra datos. No ejecuta operaciones ni da señales de compra/venta.
+      Todas las decisiones y ejecuciones son manuales, a cargo del usuario.
+    </div>
+  </div>
+
+  <script>
+    // ============ CONFIG ============
+    // The anon (publishable) key is SAFE to expose in frontend code: it has no
+    // power on its own -- Row Level Security (supabase/security.sql) gates it so
+    // that only a logged-in session can read anything. NEVER put the
+    // service_role key here; that one bypasses all security.
+    const SUPABASE_URL = "https://iofyjtqahwyqzrehomxy.supabase.co";
+    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlvZnlqdHFhaHd5cXpyZWhvbXh5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQwNTMyODMsImV4cCI6MjA5OTYyOTI4M30.pDedkcJrzIwf0ncs-fmqCTydgkHBmxVpGuEY6Q04cNg";
+
+    const db = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    const $ = (id) => document.getElementById(id);
+    const charts = {};
+
+    // ---- number/format helpers ----
+    const fmtUsd = (n) => n == null ? "—" : "$" + Number(n).toLocaleString("es-AR",
+      { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const fmtPct = (n) => n == null ? "—" : (n >= 0 ? "+" : "") + Number(n).toFixed(2) + "%";
+    const fmtNum = (n, d = 2) => n == null ? "—" : Number(n).toFixed(d);
+    const clsSign = (n) => n == null ? "" : (n >= 0 ? "pos" : "neg");
+    const fmtDate = (s) => s ? new Date(s).toLocaleDateString("es-AR",
+      { day: "2-digit", month: "short", year: "numeric" }) : "—";
+    const fmtDateTime = (s) => s ? new Date(s).toLocaleString("es-AR",
+      { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
+
+    // ============ AUTH ============
+    $("login-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const btn = $("login-btn");
+      btn.disabled = true;
+      $("login-error").textContent = "";
+      const { error } = await db.auth.signInWithPassword({
+        email: $("email").value.trim(),
+        password: $("password").value,
+      });
+      btn.disabled = false;
+      if (error) {
+        $("login-error").textContent = "No se pudo iniciar sesión: " + error.message;
+        return;
+      }
+      showDashboard();
+    });
+
+    $("logout-btn").addEventListener("click", async () => {
+      await db.auth.signOut();
+      $("dashboard").style.display = "none";
+      $("login").style.display = "flex";
+    });
+
+    async function init() {
+      const { data: { session } } = await db.auth.getSession();
+      if (session) showDashboard();
+    }
+
+    async function showDashboard() {
+      $("login").style.display = "none";
+      $("dashboard").style.display = "block";
+      await loadData();
+    }
+
+    // ============ DATA + RENDER ============
+    async function loadData() {
+      const [snapsRes, dcaRes, bulletsRes] = await Promise.all([
+        db.from("daily_snapshots").select("*").order("created_at", { ascending: true }),
+        db.from("dca_purchases").select("*").order("purchased_at", { ascending: true }),
+        db.from("bullets").select("*").order("bullet_number", { ascending: true }),
+      ]);
+
+      const snaps = snapsRes.data || [];
+      const dca = dcaRes.data || [];
+      const bullets = bulletsRes.data || [];
+
+      renderStatus(snaps, dca, bullets);
+      renderCompare(snaps);
+      renderCharts(snaps);
+      renderDcaTable(dca);
+      renderBulletsTable(bullets);
+      renderReport(snaps);
+    }
+
+    function renderStatus(snaps, dca, bullets) {
+      const last = snaps[snaps.length - 1] || {};
+      const cards = [
+        { label: "Precio BTC", value: fmtUsd(last.price),
+          sub: fmtPct(last.change_24h_pct), subCls: clsSign(last.change_24h_pct) },
+        { label: "Total invertido (DCA)", value: fmtUsd(last.total_invested_usd),
+          sub: (dca.length) + " compra(s)" },
+        { label: "Precio medio de entrada", value: fmtUsd(last.avg_entry_price),
+          sub: fmtNum(last.total_qty_btc, 8) + " BTC" },
+        { label: "Fear & Greed", value: last.fear_greed_value ?? "—",
+          sub: last.fear_greed_classification || "" },
+        { label: "Balas usadas", value: (last.bullets_used ?? 0) + " / 30",
+          sub: (last.bullets_remaining ?? 30) + " restantes" },
+        { label: "P&L realizado", value: fmtUsd(last.total_realized_pnl_usd),
+          sub: (last.tp_wins ?? 0) + " TP wins", subCls: clsSign(last.total_realized_pnl_usd) },
+      ];
+      $("status-cards").innerHTML = cards.map(c => `
+        <div class="card">
+          <div class="label">${c.label}</div>
+          <div class="value">${c.value}</div>
+          <div class="sub ${c.subCls || ""}">${c.sub || ""}</div>
+        </div>`).join("");
+
+      $("last-updated").textContent = snaps.length
+        ? "Última actualización: " + fmtDateTime(last.created_at)
+        : "Sin datos todavía — el primer snapshot aparece cuando corre el informe.";
+    }
+
+    function renderCompare(snaps) {
+      const section = $("compare-section");
+      if (snaps.length < 2) { section.style.display = "none"; return; }
+      section.style.display = "block";
+      const today = snaps[snaps.length - 1];
+      const yday = snaps[snaps.length - 2];
+      const delta = (a, b) => (a == null || b == null) ? null : a - b;
+
+      const rows = [
+        { label: "Precio BTC", d: delta(today.price, yday.price), fmt: fmtUsd },
+        { label: "Fear & Greed", d: delta(today.fear_greed_value, yday.fear_greed_value), fmt: (n) => (n>=0?"+":"") + n },
+        { label: "Mayer Multiple", d: delta(today.mayer_multiple, yday.mayer_multiple), fmt: (n) => (n>=0?"+":"") + fmtNum(n, 3) },
+        { label: "Dominancia BTC", d: delta(today.btc_dominance_pct, yday.btc_dominance_pct), fmt: (n) => fmtPct(n) },
+      ];
+      $("compare-cards").innerHTML = rows.map(r => `
+        <div class="card">
+          <div class="label">${r.label} (Δ 1 día)</div>
+          <div class="value ${clsSign(r.d)}">${r.d == null ? "—" : r.fmt(r.d)}</div>
+        </div>`).join("");
+    }
+
+    function makeChart(canvasId, labels, data, color) {
+      if (charts[canvasId]) charts[canvasId].destroy();
+      charts[canvasId] = new Chart($(canvasId), {
+        type: "line",
+        data: {
+          labels,
+          datasets: [{
+            data, borderColor: color, backgroundColor: color + "22",
+            borderWidth: 2, pointRadius: 2, tension: 0.25, fill: true,
+          }],
+        },
+        options: {
+          responsive: true,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { ticks: { color: "#8b94a3", maxTicksLimit: 6 }, grid: { color: "#2a313c" } },
+            y: { ticks: { color: "#8b94a3" }, grid: { color: "#2a313c" } },
+          },
+        },
+      });
+    }
+
+    function renderCharts(snaps) {
+      const labels = snaps.map(s => fmtDate(s.created_at));
+      makeChart("chart-price", labels, snaps.map(s => s.price), "#f7931a");
+      makeChart("chart-fg", labels, snaps.map(s => s.fear_greed_value), "#3fb950");
+      makeChart("chart-mayer", labels, snaps.map(s => s.mayer_multiple), "#58a6ff");
+      makeChart("chart-sma200w", labels,
+        snaps.map(s => s.sma200w && s.price ? ((s.price - s.sma200w) / s.sma200w * 100) : null),
+        "#bc8cff");
+    }
+
+    function renderDcaTable(dca) {
+      if (!dca.length) { $("dca-table").innerHTML = `<div class="empty">Sin compras DCA registradas.</div>`; return; }
+      $("dca-table").innerHTML = `
+        <table>
+          <thead><tr><th>Fecha</th><th>Monto</th><th>Precio</th><th>Activo</th></tr></thead>
+          <tbody>${dca.map(p => `
+            <tr>
+              <td>${fmtDate(p.purchased_at)}</td>
+              <td>${fmtUsd(p.amount_usd)}</td>
+              <td>${fmtUsd(p.price)}</td>
+              <td>${p.asset}</td>
+            </tr>`).join("")}</tbody>
+        </table>`;
+    }
+
+    function renderBulletsTable(bullets) {
+      if (!bullets.length) { $("bullets-table").innerHTML = `<div class="empty">Sin balas todavía. La fase de balas arranca cuando abras la primera manualmente.</div>`; return; }
+      $("bullets-table").innerHTML = `
+        <table>
+          <thead><tr>
+            <th>#</th><th>Estado</th><th>Colateral</th><th>Entrada</th>
+            <th>Objetivo</th><th>Liq. aprox</th><th>Cierre</th><th>P&L</th>
+          </tr></thead>
+          <tbody>${bullets.map(b => `
+            <tr>
+              <td>${b.bullet_number}</td>
+              <td><span class="badge ${b.status}">${b.status}</span></td>
+              <td>${fmtUsd(b.collateral_usd)}</td>
+              <td>${fmtUsd(b.entry_price)}</td>
+              <td>${fmtUsd(b.target_price)}</td>
+              <td>${fmtUsd(b.approx_liquidation_price)}</td>
+              <td>${b.closing_price ? fmtUsd(b.closing_price) : "—"}</td>
+              <td class="${clsSign(b.realized_pnl_usd)}">${b.realized_pnl_usd == null ? "—" : fmtUsd(b.realized_pnl_usd)}</td>
+            </tr>`).join("")}</tbody>
+        </table>`;
+    }
+
+    function renderReport(snaps) {
+      const last = snaps[snaps.length - 1];
+      $("report-text").textContent = (last && last.report_text)
+        ? last.report_text
+        : "Sin informe generado todavía.";
+    }
+
+    init();
+  </script>
+</body>
+</html>

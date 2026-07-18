@@ -5,3 +5,4 @@ logs/
 state/
 .DS_Store
 .venv/
+.claude/settings.local.json
