@@ -198,10 +198,28 @@ def update_bullet(bullet_id: int, fields: dict) -> dict:
 # --- Daily snapshots (Supabase-only; no local-file equivalent) ---------
 
 def record_snapshot(fields: dict) -> Optional[dict]:
-    """Persist a daily_snapshots row for the future dashboard's historical
+    """Persist a daily_snapshots row for the dashboard's historical
     charts. No-op (returns None) if Supabase isn't configured -- there is
     intentionally no local-JSON equivalent for this table."""
     if not db.is_enabled():
         return None
     client = db.get_client()
     return client.table("daily_snapshots").insert(fields).execute().data[0]
+
+
+# --- Price ticks (Supabase-only; no local-file equivalent) -------------
+# Higher-frequency than daily_snapshots: written every time
+# `bullet-check` runs (every 15 min via launchd), giving the dashboard's
+# price chart real intraday resolution instead of one point per day.
+
+def record_price_tick(price: float, change_24h_pct: Optional[float] = None) -> Optional[dict]:
+    """Persist a lightweight price_ticks row. No-op if Supabase isn't
+    configured. This exists purely for the dashboard chart -- nothing in
+    this codebase reads price_ticks back."""
+    if not db.is_enabled():
+        return None
+    client = db.get_client()
+    return client.table("price_ticks").insert({
+        "price": price,
+        "change_24h_pct": change_24h_pct,
+    }).execute().data[0]

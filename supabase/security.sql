@@ -17,6 +17,7 @@
 alter table dca_purchases   enable row level security;
 alter table bullets         enable row level security;
 alter table daily_snapshots enable row level security;
+alter table price_ticks     enable row level security;
 
 -- Read-only access for logged-in users. "using (true)" means any authenticated
 -- session may read every row -- which is fine here because sign-ups are
@@ -29,3 +30,6 @@ create policy "authenticated can read bullets"
 
 create policy "authenticated can read daily_snapshots"
     on daily_snapshots for select to authenticated using (true);
+
+create policy "authenticated can read price_ticks"
+    on price_ticks for select to authenticated using (true);

@@ -188,11 +188,24 @@ def cmd_bullet_status():
 
 
 def cmd_bullet_check():
-    from src import bullets
+    from src import bullets, market_data
+    symbol = os.environ.get("SYMBOL", "BTC/USDT")
+    price_data = market_data.get_price(symbol)
+    price = price_data["last_price"]
+    print(f"Current {symbol} price: {price}")
+
+    # Runs every 15 min via launchd regardless of bullet state -- this is
+    # the dashboard's price history "heartbeat" (see state.record_price_tick).
+    if db.is_enabled():
+        try:
+            state.record_price_tick(price, price_data.get("change_24h_pct"))
+        except Exception as exc:
+            print(f"⚠️ Could not record price tick: {exc}")
+
     if bullets.get_open_bullet() is None:
         print("No open bullet. Use 'bullet-open' to record one.")
         return
-    result = bullets.check_bullet(_current_price())
+    result = bullets.check_bullet(price)
     print(json.dumps(result, indent=2, ensure_ascii=False))
     if result["target_reached"] or result["near_liquidation"]:
         alerts = []

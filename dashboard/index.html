@@ -170,7 +170,10 @@
         <h1>Crypto Agent · Dashboard</h1>
         <div class="updated" id="last-updated"></div>
       </div>
-      <button class="logout" id="logout-btn">Cerrar sesión</button>
+      <div style="display:flex; gap:8px;">
+        <button class="logout" id="refresh-btn" title="Recargar todo">🔄 Actualizar</button>
+        <button class="logout" id="logout-btn">Cerrar sesión</button>
+      </div>
     </header>
 
     <section>
@@ -186,7 +189,7 @@
     <section>
       <h2>Series de tiempo</h2>
       <div class="chart-grid">
-        <div class="chart-box"><h3>Precio BTC (USD)</h3><canvas id="chart-price"></canvas></div>
+        <div class="chart-box"><h3>Precio BTC (USD) · cada 15 min</h3><canvas id="chart-price"></canvas></div>
         <div class="chart-box"><h3>Fear &amp; Greed Index</h3><canvas id="chart-fg"></canvas></div>
         <div class="chart-box"><h3>Mayer Multiple</h3><canvas id="chart-mayer"></canvas></div>
         <div class="chart-box"><h3>Distancia a SMA 200 semanas (%)</h3><canvas id="chart-sma200w"></canvas></div>
@@ -228,6 +231,13 @@
     const $ = (id) => document.getElementById(id);
     const charts = {};
 
+    // Cross-cutting data kept in memory so the live-price refresh (every
+    // 30s) can recompute price-dependent cards without re-querying
+    // Supabase each time. Populated once per full loadData() call.
+    let cache = { snaps: [], dca: [], bullets: [] };
+    let livePrice = null;
+    let liveChange24h = null;
+
     // ---- number/format helpers ----
     const fmtUsd = (n) => n == null ? "—" : "$" + Number(n).toLocaleString("es-AR",
       { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -263,6 +273,8 @@
       $("login").style.display = "flex";
     });
 
+    $("refresh-btn").addEventListener("click", () => loadData());
+
     async function init() {
       const { data: { session } } = await db.auth.getSession();
       if (session) showDashboard();
@@ -272,44 +284,101 @@
       $("login").style.display = "none";
       $("dashboard").style.display = "block";
       await loadData();
+      // Live price alone refreshes independently and more often -- it's a
+      // single free public request, no reason to wait 15 minutes for it.
+      setInterval(refreshLivePrice, 30000);
+    }
+
+    // ---- Live price: fetched directly from the browser, bypassing
+    // Supabase and the backend entirely. This is what makes the "current
+    // price" card and portfolio valuation genuinely real-time instead of
+    // only as fresh as the last daily report. CoinGecko's public endpoint
+    // needs no API key and allows browser CORS requests.
+    async function refreshLivePrice() {
+      try {
+        const res = await fetch(
+          "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true"
+        );
+        const data = await res.json();
+        livePrice = data.bitcoin.usd;
+        liveChange24h = data.bitcoin.usd_24h_change;
+      } catch (e) {
+        // Best-effort: if CoinGecko is unreachable, keep showing the last
+        // known live price (or fall back to the snapshot price in render).
+        console.warn("Live price fetch failed:", e);
+      }
+      renderStatus(cache.snaps, cache.dca, cache.bullets);
     }
 
     // ============ DATA + RENDER ============
     async function loadData() {
-      const [snapsRes, dcaRes, bulletsRes] = await Promise.all([
+      const [snapsRes, dcaRes, bulletsRes, ticksRes] = await Promise.all([
         db.from("daily_snapshots").select("*").order("created_at", { ascending: true }),
         db.from("dca_purchases").select("*").order("purchased_at", { ascending: true }),
         db.from("bullets").select("*").order("bullet_number", { ascending: true }),
+        db.from("price_ticks").select("*").order("created_at", { ascending: true }).limit(1000),
+        refreshLivePrice(),
       ]);
 
-      const snaps = snapsRes.data || [];
-      const dca = dcaRes.data || [];
-      const bullets = bulletsRes.data || [];
+      cache.snaps = snapsRes.data || [];
+      cache.dca = dcaRes.data || [];
+      cache.bullets = bulletsRes.data || [];
+      const ticks = ticksRes.data || [];
 
-      renderStatus(snaps, dca, bullets);
-      renderCompare(snaps);
-      renderCharts(snaps);
-      renderDcaTable(dca);
-      renderBulletsTable(bullets);
-      renderReport(snaps);
+      renderStatus(cache.snaps, cache.dca, cache.bullets);
+      renderCompare(cache.snaps);
+      renderCharts(cache.snaps, ticks);
+      renderDcaTable(cache.dca);
+      renderBulletsTable(cache.bullets);
+      renderReport(cache.snaps);
     }
 
     function renderStatus(snaps, dca, bullets) {
       const last = snaps[snaps.length - 1] || {};
+      // Live price (from the browser) wins over the last daily snapshot
+      // whenever it's available -- that's the whole point of fetching it.
+      const price = livePrice ?? last.price;
+      const change24h = livePrice != null ? liveChange24h : last.change_24h_pct;
+      const isLive = livePrice != null;
+
+      const totalQtyBtc = last.total_qty_btc ?? 0;
+      const totalInvested = last.total_invested_usd ?? 0;
+      const currentValue = price != null ? price * totalQtyBtc : null;
+      const unrealizedGain = currentValue != null ? currentValue - totalInvested : null;
+
       const cards = [
-        { label: "Precio BTC", value: fmtUsd(last.price),
-          sub: fmtPct(last.change_24h_pct), subCls: clsSign(last.change_24h_pct) },
-        { label: "Total invertido (DCA)", value: fmtUsd(last.total_invested_usd),
+        { label: isLive ? "Precio BTC 🟢 en vivo" : "Precio BTC", value: fmtUsd(price),
+          sub: fmtPct(change24h), subCls: clsSign(change24h) },
+        { label: "Valor actual del portfolio", value: fmtUsd(currentValue),
+          sub: isLive ? "con precio en vivo" : "con último precio conocido" },
+        { label: "Ganancia/pérdida no realizada", value: fmtUsd(unrealizedGain),
+          sub: fmtPct(totalInvested ? (unrealizedGain / totalInvested * 100) : null),
+          subCls: clsSign(unrealizedGain) },
+        { label: "Total invertido (DCA)", value: fmtUsd(totalInvested),
           sub: (dca.length) + " compra(s)" },
         { label: "Precio medio de entrada", value: fmtUsd(last.avg_entry_price),
-          sub: fmtNum(last.total_qty_btc, 8) + " BTC" },
+          sub: fmtNum(totalQtyBtc, 8) + " BTC" },
         { label: "Fear & Greed", value: last.fear_greed_value ?? "—",
           sub: last.fear_greed_classification || "" },
         { label: "Balas usadas", value: (last.bullets_used ?? 0) + " / 30",
           sub: (last.bullets_remaining ?? 30) + " restantes" },
-        { label: "P&L realizado", value: fmtUsd(last.total_realized_pnl_usd),
+        { label: "P&L realizado (balas)", value: fmtUsd(last.total_realized_pnl_usd),
           sub: (last.tp_wins ?? 0) + " TP wins", subCls: clsSign(last.total_realized_pnl_usd) },
       ];
+
+      const openBullet = bullets.find(b => b.status === "open" || b.status === "tracking");
+      if (openBullet && price != null) {
+        const priceMovePct = (price - openBullet.entry_price) / openBullet.entry_price * 100;
+        const positionGainPct = priceMovePct * openBullet.leverage;
+        const unrealizedPnl = openBullet.collateral_usd * positionGainPct / 100;
+        cards.push({
+          label: `Bala #${openBullet.bullet_number} · P&L no realizado`,
+          value: fmtUsd(unrealizedPnl),
+          sub: fmtPct(positionGainPct) + " sobre la posición" + (isLive ? " · en vivo" : ""),
+          subCls: clsSign(unrealizedPnl),
+        });
+      }
+
       $("status-cards").innerHTML = cards.map(c => `
         <div class="card">
           <div class="label">${c.label}</div>
@@ -317,9 +386,11 @@
           <div class="sub ${c.subCls || ""}">${c.sub || ""}</div>
         </div>`).join("");
 
-      $("last-updated").textContent = snaps.length
-        ? "Última actualización: " + fmtDateTime(last.created_at)
-        : "Sin datos todavía — el primer snapshot aparece cuando corre el informe.";
+      $("last-updated").textContent = isLive
+        ? "Precio en vivo actualizado: " + new Date().toLocaleTimeString("es-AR")
+        : (snaps.length
+          ? "Última actualización: " + fmtDateTime(last.created_at)
+          : "Sin datos todavía — el primer snapshot aparece cuando corre el informe.");
     }
 
     function renderCompare(snaps) {
@@ -365,9 +436,17 @@
       });
     }
 
-    function renderCharts(snaps) {
+    function renderCharts(snaps, ticks) {
+      // Price chart: prefer price_ticks (written every 15 min by
+      // bullet-check) for real intraday resolution. Falls back to the
+      // once-a-day snapshots if ticks haven't started accumulating yet.
+      const priceSeries = ticks.length ? ticks : snaps;
+      const priceLabels = priceSeries.map(t => fmtDateTime(t.created_at));
+      makeChart("chart-price", priceLabels, priceSeries.map(t => t.price), "#f7931a");
+
+      // Everything else only exists once a day in daily_snapshots -- these
+      // indicators are inherently slow-moving, no need for 15-min resolution.
       const labels = snaps.map(s => fmtDate(s.created_at));
-      makeChart("chart-price", labels, snaps.map(s => s.price), "#f7931a");
       makeChart("chart-fg", labels, snaps.map(s => s.fear_greed_value), "#3fb950");
       makeChart("chart-mayer", labels, snaps.map(s => s.mayer_multiple), "#58a6ff");
       makeChart("chart-sma200w", labels,

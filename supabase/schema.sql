@@ -75,3 +75,14 @@ create table if not exists daily_snapshots (
     -- the full LLM-generated report text, for a real historical record
     report_text text
 );
+
+-- Lightweight, high-frequency price history for the dashboard's price
+-- chart. Populated by `python main.py bullet-check` (runs every 15 min
+-- via launchd on your Mac) -- no separate scheduler needed. Independent
+-- of daily_snapshots, which only gets one row/day from the full report.
+create table if not exists price_ticks (
+    id bigint generated always as identity primary key,
+    created_at timestamptz not null default now(),
+    price numeric not null,
+    change_24h_pct numeric
+);
