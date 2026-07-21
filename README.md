@@ -36,8 +36,10 @@ src/
   notify.py               -> output dispatcher: console / email / telegram
   email_notifier.py       -> SMTP delivery to your mailbox (e.g. Outlook)
   telegram_notifier.py    -> Telegram delivery (optional)
-  agent.py                -> tool-calling loop on the Claude API
-  agent_ollama.py         -> the SAME loop on a local model via Ollama
+  agent.py                -> two coordinated sub-agents (Market Analyst,
+                             Portfolio Manager) on the Claude API
+  agent_ollama.py         -> the SAME two-sub-agent design on a local
+                             model via Ollama
 tests/
   test_logic.py           -> unit tests for market_data/strategy_tools (no network, no LLM)
   test_bullets.py         -> unit tests for the bullet state machine (isolated temp state,
@@ -65,6 +67,18 @@ supabase/schema.sql       -> run once in the Supabase SQL Editor to create the t
   you try to open a second bullet while one is active, or exceed the
   30-bullet cycle. Prompt wording alone ("you MUST call every tool")
   was tested and found insufficient, even on Claude.
+- **Multi-agent report**: `run_daily_report()` coordinates two independent
+  sub-agents — a Market Analyst (price/indicators/cycle/sentiment tools
+  only) and a Portfolio Manager (DCA/bullet tools only), each with its
+  own prompt and `REQUIRED_TOOLS` set — then concatenates their text. No
+  synthesis LLM call: cheaper, faster, one fewer failure point, at the
+  cost of two sections instead of one fused narrative. Caught in testing:
+  giving the market analyst fewer, more focused tools didn't stop the
+  local Ollama model from once fabricating an indicator we never gave it
+  (MACD) and once mislabeling BTC dominance as BNB's — fixed with an
+  explicit "only report what a tool actually returned" rule in the
+  prompt, the same category of fix as the `get_current_date` lesson from
+  Phase 1: never let the model infer what a tool could tell it instead.
 - **Retries with backoff** on all network calls (public APIs fail
   sporadically).
 - **Structured JSONL logging** of every tool call, its input and its
@@ -181,9 +195,13 @@ Netlify (no build command; output/root directory = `dashboard`).
 
 ## Roadmap
 
-1. **Multi-agent**: a market-analyst agent + a bullet-manager agent,
-   coordinated.
-2. **Memory**: compare against previous reports to detect regime changes.
+1. **Memory**: compare against previous reports (now stored in
+   `daily_snapshots`) to detect regime changes.
+2. **Telegram bidirectional bot**: respond to commands from the chat
+   (e.g. `/bullet-open 500`) talking directly to Supabase, same pattern
+   as the dashboard.
+3. **Backtesting**: simulate the 30-bullet cycle against historical BingX
+   data.
 
 ## Disclaimer
 
