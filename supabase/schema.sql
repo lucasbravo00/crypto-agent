@@ -14,7 +14,12 @@ create table if not exists dca_purchases (
     purchased_at timestamptz not null default now(),
     amount_usd numeric not null check (amount_usd > 0),
     price numeric not null check (price > 0),
-    asset text not null default 'BTC'
+    asset text not null default 'BTC',
+    -- BingX spot trade id, set when this purchase was auto-imported by
+    -- src/dca.py's sync_with_bingx() instead of typed in by hand via
+    -- `main.py buy`. NULL for manually-recorded purchases. Unique so
+    -- syncing twice never double-imports the same real trade.
+    bingx_trade_id text unique
 );
 
 create table if not exists bullets (
@@ -90,4 +95,15 @@ create table if not exists price_ticks (
     created_at timestamptz not null default now(),
     price numeric not null,
     change_24h_pct numeric
+);
+
+-- Same cadence/purpose as price_ticks, but for your BingX DEMO (VST)
+-- account's total balance -- the capital being used to test the bullets
+-- strategy. (NOT the real spot wallet: that one is emptied out weekly by
+-- design, since BTC gets rotated to Nexo for yield between DCA buys --
+-- current DCA value is computed directly from dca_purchases instead.)
+create table if not exists account_ticks (
+    id bigint generated always as identity primary key,
+    created_at timestamptz not null default now(),
+    vst_total numeric not null
 );

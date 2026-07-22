@@ -29,6 +29,16 @@ usable client. There is currently no code path anywhere in this project
 that can place a LIVE order. If real trading is ever wanted, that must
 be a deliberate, separately-requested piece of new code -- never a
 config flip.
+
+--- REAL (live) account access -- READ-ONLY ---------------------------
+The DCA leg of the strategy uses REAL money on your actual BingX SPOT
+wallet (unlike the bullets, which are demo-only). _get_real_client()
+below deliberately does NOT set sandbox mode, so it talks to your real
+account -- but every function built on it only ever calls fetch_*
+methods. NEVER add a create_order/cancel_order call using
+_get_real_client(). If real order placement is ever wanted, that is a
+deliberate, separately-requested feature -- never an incidental addition
+to this section.
 """
 from __future__ import annotations
 import os
@@ -40,7 +50,13 @@ import ccxt
 # project for read-only price/indicator data.)
 SYMBOL = "BTC/USDT:USDT"
 
+# Spot market symbol, used only by the real-account, read-only DCA
+# functions below -- not to be confused with SYMBOL (the demo futures
+# symbol) above.
+SPOT_SYMBOL = "BTC/USDT"
+
 _client = None
+_real_client = None
 
 
 def is_enabled() -> bool:
@@ -199,3 +215,44 @@ def close_all_long_positions(test: bool = False, **_ignored) -> dict:
         SYMBOL, "market", "sell", amount,
         params={"hedged": True, "reduceOnly": True, "test": test},
     )
+
+
+# --- Real account, SPOT, READ-ONLY (DCA) ----------------------------------
+# Everything below talks to your REAL BingX account (real money) but is
+# strictly read-only -- see the module docstring's "REAL (live) account
+# access" section. Used to auto-import DCA purchases you've already made
+# on BingX's spot market, instead of typing them in by hand.
+
+def _get_real_client():
+    """Return a cached ccxt BingX client in LIVE mode (no sandbox). Only
+    ever used for fetch_* calls -- see module docstring."""
+    global _real_client
+    if _real_client is not None:
+        return _real_client
+
+    if not is_enabled():
+        raise RuntimeError(
+            "BINGX_API_KEY / BINGX_API_SECRET are not set. See .env.example."
+        )
+
+    client = ccxt.bingx({
+        "apiKey": os.environ["BINGX_API_KEY"],
+        "secret": os.environ["BINGX_API_SECRET"],
+        "enableRateLimit": True,
+    })
+    # Deliberately NOT calling set_sandbox_mode(True) here -- this is the
+    # one client in this project that talks to the real account. Read-only
+    # by convention: no function using this client may call create_order.
+    _real_client = client
+    return client
+
+
+def get_real_spot_trades(**_ignored) -> list[dict]:
+    """Read your executed SPOT trades (fills) for BTC/USDT on your REAL
+    BingX account, oldest first. Read-only. Used by src/dca.py to
+    reconstruct your DCA purchase history without you re-entering it."""
+    client = _get_real_client()
+    trades = client.fetch_my_trades(SPOT_SYMBOL)
+    return sorted(trades, key=lambda t: t.get("timestamp") or 0)
+
+

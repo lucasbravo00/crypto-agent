@@ -99,6 +99,8 @@
     section { margin-top: 28px; }
     section h2 { font-size: 15px; color: var(--muted); text-transform: uppercase;
                  letter-spacing: 0.05em; margin: 0 0 12px; font-weight: 600; }
+    .section-note { color: var(--muted); font-size: 13px; margin: -6px 0 12px; line-height: 1.5; }
+    .card.total { border-color: var(--accent); }
 
     /* Cards grid */
     .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
@@ -197,12 +199,14 @@
     </section>
 
     <section>
-      <h2>Compras DCA</h2>
+      <h2>Compras DCA (spot, manual)</h2>
+      <p class="section-note">Compras reales de BTC que registrás vos a mano con <code>main.py buy</code>. Es capital real, distinto del que se usa en las balas.</p>
       <div class="table-wrap" id="dca-table"></div>
     </section>
 
     <section>
-      <h2>Ciclo de balas</h2>
+      <h2>Balas (BingX Demo, apalancado)</h2>
+      <p class="section-note">Trading apalancado en la cuenta Demo/VST de BingX (dinero virtual, no real). Las balas se acumulan por ronda: hasta 30 por ronda, se abre como máximo 1 nueva por día, y cuando la posición combinada llega a +15% se cierran todas juntas y arranca una ronda nueva.</p>
       <div class="table-wrap" id="bullets-table"></div>
     </section>
 
@@ -234,7 +238,7 @@
     // Cross-cutting data kept in memory so the live-price refresh (every
     // 30s) can recompute price-dependent cards without re-querying
     // Supabase each time. Populated once per full loadData() call.
-    let cache = { snaps: [], dca: [], bullets: [] };
+    let cache = { snaps: [], dca: [], bullets: [], account: null };
     let livePrice = null;
     let liveChange24h = null;
 
@@ -312,17 +316,21 @@
 
     // ============ DATA + RENDER ============
     async function loadData() {
-      const [snapsRes, dcaRes, bulletsRes, ticksRes] = await Promise.all([
+      const [snapsRes, dcaRes, bulletsRes, ticksRes, accountRes] = await Promise.all([
         db.from("daily_snapshots").select("*").order("created_at", { ascending: true }),
         db.from("dca_purchases").select("*").order("purchased_at", { ascending: true }),
-        db.from("bullets").select("*").order("bullet_number", { ascending: true }),
+        db.from("bullets").select("*")
+          .order("round_number", { ascending: true })
+          .order("bullet_number", { ascending: true }),
         db.from("price_ticks").select("*").order("created_at", { ascending: true }).limit(1000),
+        db.from("account_ticks").select("*").order("created_at", { ascending: false }).limit(1),
         refreshLivePrice(),
       ]);
 
       cache.snaps = snapsRes.data || [];
       cache.dca = dcaRes.data || [];
       cache.bullets = bulletsRes.data || [];
+      cache.account = (accountRes.data && accountRes.data[0]) || null;
       const ticks = ticksRes.data || [];
 
       renderStatus(cache.snaps, cache.dca, cache.bullets);
@@ -333,6 +341,8 @@
       renderReport(cache.snaps);
     }
 
+    const MAX_BULLETS_PER_ROUND = 30;
+
     function renderStatus(snaps, dca, bullets) {
       const last = snaps[snaps.length - 1] || {};
       // Live price (from the browser) wins over the last daily snapshot
@@ -341,47 +351,91 @@
       const change24h = livePrice != null ? liveChange24h : last.change_24h_pct;
       const isLive = livePrice != null;
 
-      const totalQtyBtc = last.total_qty_btc ?? 0;
-      const totalInvested = last.total_invested_usd ?? 0;
-      const currentValue = price != null ? price * totalQtyBtc : null;
-      const unrealizedGain = currentValue != null ? currentValue - totalInvested : null;
+      // Computed live from dca_purchases itself (auto-synced from your
+      // REAL BingX spot trades every 15 min -- see src/dca.py), not from
+      // daily_snapshots, for the same freshness reason as the bullets
+      // numbers below. Value is computed from the BTC you've bought,
+      // regardless of where it physically sits: you rotate it to Nexo
+      // for yield between weekly DCA buys, so the BingX spot wallet
+      // itself is NOT a meaningful "money in account" figure here.
+      const totalQtyBtc = dca.reduce((sum, p) => sum + (p.amount_usd / p.price), 0);
+      const totalInvested = dca.reduce((sum, p) => sum + Number(p.amount_usd), 0);
+      const dcaValue = price != null ? price * totalQtyBtc : null;
+      const dcaUnrealizedGain = dcaValue != null ? dcaValue - totalInvested : null;
 
-      const cards = [
-        { label: isLive ? "Precio BTC 🟢 en vivo" : "Precio BTC", value: fmtUsd(price),
-          sub: fmtPct(change24h), subCls: clsSign(change24h) },
-        { label: "Valor actual del portfolio", value: fmtUsd(currentValue),
-          sub: isLive ? "con precio en vivo" : "con último precio conocido" },
-        { label: "Ganancia/pérdida no realizada", value: fmtUsd(unrealizedGain),
-          sub: fmtPct(totalInvested ? (unrealizedGain / totalInvested * 100) : null),
-          subCls: clsSign(unrealizedGain) },
-        { label: "Total invertido (DCA)", value: fmtUsd(totalInvested),
-          sub: (dca.length) + " compra(s)" },
-        { label: "Precio medio de entrada", value: fmtUsd(last.avg_entry_price),
-          sub: fmtNum(totalQtyBtc, 8) + " BTC" },
-        { label: "Fear & Greed", value: last.fear_greed_value ?? "—",
-          sub: last.fear_greed_classification || "" },
-        { label: "Balas usadas", value: (last.bullets_used ?? 0) + " / 30",
-          sub: (last.bullets_remaining ?? 30) + " restantes" },
-        { label: "P&L realizado (balas)", value: fmtUsd(last.total_realized_pnl_usd),
-          sub: (last.tp_wins ?? 0) + " TP wins", subCls: clsSign(last.total_realized_pnl_usd) },
-      ];
+      // "Balance cuenta demo (VST)": the BingX Demo Trading account's own
+      // reported total balance -- straight from the exchange, via
+      // account_ticks (written every 15 min by bullet-check; see
+      // bingx_client.get_balance()). This is the capital being used to
+      // test the bullets strategy right now, NOT real money.
+      const vstTotal = cache.account ? Number(cache.account.vst_total) : null;
+
+      // Everything below is computed live from the "bullets" table itself
+      // (synced every 15 min by bullet-check), NOT from daily_snapshots --
+      // daily_snapshots only gets one row/day from the full report, so
+      // relying on it here made these numbers look stale for hours.
+      const activeBullets = bullets.filter(b => b.status === "open" || b.status === "tracking");
+      const closedBullets = bullets.filter(b => b.status.startsWith("closed"));
+      const roundOutcomes = {};
+      for (const b of closedBullets) roundOutcomes[b.round_number] = b.status;
+      const roundsCompleted = Object.keys(roundOutcomes).length;
+      const tpRounds = Object.values(roundOutcomes).filter(s => s === "closed_tp").length;
+      const totalRealizedPnl = closedBullets.reduce((sum, b) => sum + (Number(b.realized_pnl_usd) || 0), 0);
+      const currentRound = activeBullets.length
+        ? activeBullets[0].round_number
+        : bullets.reduce((max, b) => Math.max(max, b.round_number || 0), 0);
 
       // Bullets accumulate: the +15% target is evaluated on the COMBINED
       // position across every active bullet, not per bullet. Sum unrealized
       // P&L and collateral across all of them for the combined gain %.
-      const activeBullets = bullets.filter(b => b.status === "open" || b.status === "tracking");
+      let combinedPnl = 0;
+      let combinedGainPct = 0;
       if (activeBullets.length && price != null) {
         let combinedCollateral = 0;
-        let combinedPnl = 0;
         for (const b of activeBullets) {
           const priceMovePct = (price - b.entry_price) / b.entry_price * 100;
           const positionGainPct = priceMovePct * b.leverage;
           combinedCollateral += b.collateral_usd;
           combinedPnl += b.collateral_usd * positionGainPct / 100;
         }
-        const combinedGainPct = combinedCollateral ? (combinedPnl / combinedCollateral * 100) : 0;
+        combinedGainPct = combinedCollateral ? (combinedPnl / combinedCollateral * 100) : 0;
+      }
+
+      // "Patrimonio total": your real DCA value plus the demo VST balance
+      // -- one number to eyeball where things stand overall, but the
+      // sub-label keeps them distinguishable since the VST leg is
+      // virtual/testing money, not real. Falls back to dcaValue alone if
+      // account_ticks hasn't been written yet.
+      const totalPortfolioValue = (dcaValue ?? 0) + (vstTotal ?? 0);
+      const avgEntryPrice = totalQtyBtc ? totalInvested / totalQtyBtc : null;
+
+      const cards = [
+        { label: "Patrimonio total estimado", value: fmtUsd(totalPortfolioValue),
+          sub: "DCA real (BTC) + balance demo BingX (VST)", cls: "total" },
+        { label: isLive ? "Precio BTC 🟢 en vivo" : "Precio BTC", value: fmtUsd(price),
+          sub: fmtPct(change24h), subCls: clsSign(change24h) },
+        { label: "Balance cuenta demo (VST)", value: vstTotal != null ? fmtUsd(vstTotal) : "—",
+          sub: "capital de prueba para la estrategia de balas" },
+        { label: "Valor DCA (BTC real)", value: fmtUsd(dcaValue),
+          sub: "puede estar en Nexo generando APR entre compras" },
+        { label: "Ganancia/pérdida DCA", value: fmtUsd(dcaUnrealizedGain),
+          sub: fmtPct(totalInvested ? (dcaUnrealizedGain / totalInvested * 100) : null),
+          subCls: clsSign(dcaUnrealizedGain) },
+        { label: "Total invertido (DCA)", value: fmtUsd(totalInvested),
+          sub: (dca.length) + " compra(s)" },
+        { label: "Precio medio de entrada", value: fmtUsd(avgEntryPrice),
+          sub: fmtNum(totalQtyBtc, 8) + " BTC" },
+        { label: "Fear & Greed", value: last.fear_greed_value ?? "—",
+          sub: last.fear_greed_classification || "" },
+        { label: `Balas usadas (ronda ${currentRound || "—"})`, value: activeBullets.length + " / " + MAX_BULLETS_PER_ROUND,
+          sub: (MAX_BULLETS_PER_ROUND - activeBullets.length) + " restantes esta ronda" },
+        { label: "P&L realizado (balas, todas las rondas)", value: fmtUsd(totalRealizedPnl),
+          sub: `${roundsCompleted} ronda(s) cerrada(s) · ${tpRounds} en TP`, subCls: clsSign(totalRealizedPnl) },
+      ];
+
+      if (activeBullets.length) {
         cards.push({
-          label: `Ronda actual (${activeBullets.length} bala${activeBullets.length > 1 ? "s" : ""}) · P&L combinado`,
+          label: `Ronda ${currentRound} en curso (${activeBullets.length} bala${activeBullets.length > 1 ? "s" : ""}) · P&L combinado`,
           value: fmtUsd(combinedPnl),
           sub: fmtPct(combinedGainPct) + " sobre el conjunto" + (isLive ? " · en vivo" : ""),
           subCls: clsSign(combinedPnl),
@@ -389,7 +443,7 @@
       }
 
       $("status-cards").innerHTML = cards.map(c => `
-        <div class="card">
+        <div class="card ${c.cls || ""}">
           <div class="label">${c.label}</div>
           <div class="value">${c.value}</div>
           <div class="sub ${c.subCls || ""}">${c.sub || ""}</div>
@@ -483,11 +537,12 @@
       $("bullets-table").innerHTML = `
         <table>
           <thead><tr>
-            <th>#</th><th>Estado</th><th>Colateral</th><th>Entrada</th>
-            <th>Objetivo</th><th>Liq. aprox</th><th>Cierre</th><th>P&L</th>
+            <th>Ronda</th><th>#</th><th>Estado</th><th>Colateral</th><th>Entrada</th>
+            <th>Objetivo</th><th>Liq. aprox</th><th>Cierre</th><th>P&L</th><th>Origen</th>
           </tr></thead>
           <tbody>${bullets.map(b => `
             <tr>
+              <td>${b.round_number ?? "—"}</td>
               <td>${b.bullet_number}</td>
               <td><span class="badge ${b.status}">${b.status}</span></td>
               <td>${fmtUsd(b.collateral_usd)}</td>
@@ -496,6 +551,7 @@
               <td>${fmtUsd(b.approx_liquidation_price)}</td>
               <td>${b.closing_price ? fmtUsd(b.closing_price) : "—"}</td>
               <td class="${clsSign(b.realized_pnl_usd)}">${b.realized_pnl_usd == null ? "—" : fmtUsd(b.realized_pnl_usd)}</td>
+              <td>${b.bingx_order_id ? "BingX" : "manual"}</td>
             </tr>`).join("")}</tbody>
         </table>`;
     }

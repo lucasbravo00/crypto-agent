@@ -87,21 +87,38 @@ def get_dca_purchases() -> list[dict]:
     return load_state()["dca_purchases"]
 
 
-def insert_dca_purchase(amount_usd: float, price: float, asset: str = "BTC") -> dict:
-    now_iso = datetime.now(timezone.utc).isoformat()
+def insert_dca_purchase(
+    amount_usd: float,
+    price: float,
+    asset: str = "BTC",
+    bingx_trade_id: Optional[str] = None,
+    purchased_at: Optional[str] = None,
+) -> dict:
+    """Record a DCA purchase. `bingx_trade_id` / `purchased_at` are set
+    when this purchase was auto-imported from a real BingX spot fill (see
+    src/dca.py's sync_with_bingx()) -- bingx_trade_id is the dedupe key
+    that keeps repeated syncs from double-importing the same trade."""
+    purchased_at = purchased_at or datetime.now(timezone.utc).isoformat()
     if db.is_enabled():
         client = db.get_client()
         row = {
-            "purchased_at": now_iso,
+            "purchased_at": purchased_at,
             "amount_usd": amount_usd,
             "price": price,
             "asset": asset,
+            "bingx_trade_id": bingx_trade_id,
         }
         result = client.table("dca_purchases").insert(row).execute().data[0]
-        result.setdefault("date", result.get("purchased_at", now_iso))
+        result.setdefault("date", result.get("purchased_at", purchased_at))
         return result
     state = load_state()
-    purchase = {"date": now_iso, "amount_usd": amount_usd, "price": price, "asset": asset}
+    purchase = {
+        "date": purchased_at,
+        "amount_usd": amount_usd,
+        "price": price,
+        "asset": asset,
+        "bingx_trade_id": bingx_trade_id,
+    }
     state["dca_purchases"].append(purchase)
     save_state(state)
     return purchase
@@ -223,4 +240,23 @@ def record_price_tick(price: float, change_24h_pct: Optional[float] = None) -> O
     return client.table("price_ticks").insert({
         "price": price,
         "change_24h_pct": change_24h_pct,
+    }).execute().data[0]
+
+
+# --- Account ticks (Supabase-only; no local-file equivalent) -----------
+# Same cadence/purpose as price_ticks, but for your BingX DEMO (VST)
+# account's total balance -- the capital being used to test the bullets
+# strategy. NOT the real spot wallet: that one is emptied out weekly by
+# design (BTC gets rotated to Nexo for yield between DCA buys), so it
+# isn't a meaningful "money in account" figure -- current DCA value is
+# computed directly from dca_purchases instead (see dashboard/index.html).
+
+def record_account_tick(vst_total: float) -> Optional[dict]:
+    """Persist a lightweight account_ticks row. No-op if Supabase isn't
+    configured."""
+    if not db.is_enabled():
+        return None
+    client = db.get_client()
+    return client.table("account_ticks").insert({
+        "vst_total": vst_total,
     }).execute().data[0]

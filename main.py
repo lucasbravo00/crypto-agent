@@ -7,6 +7,8 @@ Entry point. Available commands:
     python main.py buy 50        -> record a 50 USD DCA purchase at the CURRENT BTC price (auto-fetched)
     python main.py buy 50 60000  -> record a 50 USD DCA purchase at a price you specify
     python main.py dca           -> summary of your DCA purchases (no LLM, instant)
+    python main.py dca-sync      -> import real BTC/USDT spot buys from your REAL BingX account
+                                     (read-only; also runs automatically inside bullet-check)
     python main.py metrics       -> raw market and cycle metrics (no LLM)
     python main.py bullet 500          -> math of a 500 USD x5 bullet at the current price
     python main.py bullet 500 60000 3  -> same with entry price 60000 and x3 leverage
@@ -163,6 +165,19 @@ def cmd_dca():
     print(json.dumps(state.get_dca_summary(), indent=2, ensure_ascii=False))
 
 
+def cmd_dca_sync():
+    from src import dca
+    result = dca.sync_with_bingx()
+    if not result["synced"]:
+        print(f"Not synced: {result['reason']}")
+        return
+    if result["imported"]:
+        print(f"Imported {len(result['imported'])} DCA purchase(s) from real BingX spot trades:")
+        print(json.dumps(result["imported"], indent=2, ensure_ascii=False))
+    else:
+        print("Already up to date -- no new real BingX spot buys to import.")
+
+
 def cmd_metrics():
     from src import market_data
     symbol = os.environ.get("SYMBOL", "BTC/USDT")
@@ -247,6 +262,21 @@ def cmd_bullet_check():
             trade_result = bullets.auto_trade()
             if trade_result["traded"]:
                 print(f"BingX auto-trade: {trade_result['action']} — {trade_result['order']}")
+                order = trade_result["order"]
+                amount = order.get("amount")
+                avg_price = order.get("average") or order.get("price")
+                cost = order.get("cost")
+                if trade_result["action"] == "open":
+                    msg = (
+                        f"🟢 Auto-trade: opened a new bullet.\n"
+                        f"Size: {amount} BTC (~{cost} USD collateral*leverage) at ~{avg_price} USD."
+                    )
+                else:
+                    msg = (
+                        f"🔴 Auto-trade: combined target reached, closed ALL active bullets.\n"
+                        f"Size: {amount} BTC at ~{avg_price} USD."
+                    )
+                notify.notify(msg, subject_prefix="BingX auto-trade")
         except Exception as exc:
             print(f"⚠️ Could not run BingX auto-trade: {exc}")
 
@@ -257,6 +287,28 @@ def cmd_bullet_check():
                       f"{len(sync_result['closed'])} bullet(s) closed from real trades.")
         except Exception as exc:
             print(f"⚠️ Could not sync with BingX: {exc}")
+
+        # DCA leg: read-only against your REAL (non-demo) spot wallet --
+        # see bingx_client.py's "REAL account access" section.
+        from src import dca
+        try:
+            dca_result = dca.sync_with_bingx()
+            if dca_result["synced"] and dca_result["imported"]:
+                print(f"DCA sync: imported {len(dca_result['imported'])} real spot buy(s).")
+        except Exception as exc:
+            print(f"⚠️ Could not sync DCA with BingX: {exc}")
+
+        if db.is_enabled():
+            try:
+                # DEMO (VST) balance -- the capital being used to test the
+                # bullets strategy right now. NOT the real spot wallet:
+                # that one is emptied out weekly on purpose (BTC rotates
+                # to Nexo for yield between DCA buys), so it isn't a
+                # meaningful "money in account" figure.
+                balance = bingx_client.get_balance()
+                state.record_account_tick(balance["total"])
+            except Exception as exc:
+                print(f"⚠️ Could not record account tick: {exc}")
 
     if not bullets.get_active_bullets():
         print("No active bullets. Use 'bullet-open' to record one.")
@@ -346,6 +398,8 @@ if __name__ == "__main__":
         cmd_buy(rest)
     elif cmd == "dca":
         cmd_dca()
+    elif cmd == "dca-sync":
+        cmd_dca_sync()
     elif cmd == "metrics":
         cmd_metrics()
     elif cmd == "bullet":

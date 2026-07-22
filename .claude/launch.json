@@ -3,9 +3,9 @@
   "configurations": [
     {
       "name": "dashboard",
-      "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "4173", "--directory", "dashboard"],
-      "port": 4173
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["--yes", "serve", "-l", "4174", "/Users/lucas/Documents/crypto-agent/dashboard"],
+      "port": 4174
     }
   ]
 }
