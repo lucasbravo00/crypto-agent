@@ -132,67 +132,68 @@ def get_dca_summary(**_ignored) -> dict:
 
 
 # --- Bullets -------------------------------------------------------------
-# "id" here always means the bullet's position in the 30-bullet cycle
-# (1..30), NOT a database primary key -- bullets.py's "one bullet at a
-# time" logic and tests depend on that meaning staying stable across
-# backends. The Supabase table's own identity column is never exposed.
+# Two different numbers, don't conflate them:
+#   "id"            -> globally unique, NEVER reused or reset. The only
+#                      safe key for update_bullet(). Supabase's own
+#                      identity column; a lifetime-incrementing counter
+#                      for the local JSON backend.
+#   "bullet_number" -> position WITHIN the current round (1..30). RESETS
+#                      to 1 every time a new round starts (see
+#                      bullets.py's round design). Display-only -- two
+#                      different bullets from two different rounds can
+#                      legitimately share the same bullet_number, so it
+#                      must never be used to look up a specific bullet.
 
 def get_bullets() -> list[dict]:
     if db.is_enabled():
         client = db.get_client()
-        rows = (
+        return (
             client.table("bullets")
             .select("*")
-            .order("bullet_number")
+            .order("id")
             .execute()
             .data
         )
-        for row in rows:
-            row["id"] = row["bullet_number"]
-        return rows
     return load_state()["bullets"]
 
 
-def insert_bullet(bullet: dict) -> dict:
-    """Insert a new bullet, assigning it the next cycle position (current
-    count + 1) as its "id". Backend-agnostic."""
+def insert_bullet(bullet: dict, bullet_number: int) -> dict:
+    """Insert a new bullet at the given bullet_number (its position within
+    the round -- bullets.py computes this, since only it knows whether a
+    round is in progress or a new one is starting). Returns the record
+    with its globally-unique "id" assigned."""
     if db.is_enabled():
         client = db.get_client()
-        existing = client.table("bullets").select("bullet_number").execute().data
-        bullet_number = len(existing) + 1
         row = {**bullet, "bullet_number": bullet_number}
-        result = client.table("bullets").insert(row).execute().data[0]
-        result["id"] = result["bullet_number"]
-        return result
+        return client.table("bullets").insert(row).execute().data[0]
     state = load_state()
-    bullet_number = len(state["bullets"]) + 1
-    record = {**bullet, "id": bullet_number}
+    next_id = max((b["id"] for b in state["bullets"]), default=0) + 1
+    record = {**bullet, "id": next_id, "bullet_number": bullet_number}
     state["bullets"].append(record)
     save_state(state)
     return record
 
 
-def update_bullet(bullet_id: int, fields: dict) -> dict:
-    """Update the bullet at cycle position ``bullet_id`` (see get_bullets
-    docstring) and return the updated record."""
+def update_bullet(unique_id: int, fields: dict) -> dict:
+    """Update the bullet identified by its globally-unique "id" (NEVER
+    bullet_number -- see the note above this section) and return the
+    updated record."""
     if db.is_enabled():
         client = db.get_client()
-        result = (
+        return (
             client.table("bullets")
             .update(fields)
-            .eq("bullet_number", bullet_id)
+            .eq("id", unique_id)
             .execute()
             .data[0]
         )
-        result["id"] = result["bullet_number"]
-        return result
     state = load_state()
     for b in state["bullets"]:
-        if b["id"] == bullet_id:
+        if b["id"] == unique_id:
             b.update(fields)
             save_state(state)
             return b
-    raise RuntimeError(f"Bullet {bullet_id} not found")
+    raise RuntimeError(f"Bullet {unique_id} not found")
 
 
 # --- Daily snapshots (Supabase-only; no local-file equivalent) ---------

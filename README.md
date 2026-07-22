@@ -13,10 +13,15 @@ runs entirely outside the code:
 1. **DCA phase** (current): accumulate BTC via manual spot purchases
    during a bear market, recorded with `python main.py buy`.
 2. **Bullet phase** (once the user decides — manually — that a bull
-   market has started): up to 30 sequential x5 leveraged futures
-   positions on BingX, one at a time, each targeting +15% gain on the
-   position. Opened and closed by hand on the exchange; this project
-   only *records* what happened and computes the math/P&L from it.
+   market has started): x5 leveraged futures positions ("bullets") on
+   BingX, at most one NEW one per calendar day, up to a lifetime cap of
+   30. Bullets **accumulate** — the previous ones stay open while a new
+   one is added each day. The +15% target is evaluated on the
+   **combined** position across every currently active bullet, not per
+   bullet; when the combined gain hits +15%, ALL active bullets close
+   together and the cycle continues. Opened and closed by hand on the
+   exchange; this project only *records* what happened and computes the
+   math/P&L from it.
 
 ## Architecture
 
@@ -29,9 +34,15 @@ src/
                              (BingX/CoinGecko), all with retry logic
   strategy_tools.py       -> pure math of a leveraged bullet position (no network)
   state.py                -> stateful tool: DCA purchases + bullets, dual backend (see below)
-  bullets.py              -> bullet state machine: open -> tracking -> closed_tp/closed_manual;
-                             enforces "one bullet at a time" and the 30-bullet cycle cap in code
-                             (also enforced at the DB level when using Supabase)
+  bullets.py              -> bullet state machine: open -> tracking -> closed_tp/closed_manual.
+                             Bullets accumulate (one NEW bullet/day, up to 30 lifetime); the
+                             +15% target and closes apply to the COMBINED active set, not per
+                             bullet. Bullet size auto-computes as (BingX balance / 30) at the
+                             start of each round if not given explicitly. sync_with_bingx()
+                             reconciles bullets against REAL BingX trade history.
+  bingx_client.py         -> BingX Demo Trading (VST) access via ccxt: reads positions/balance/
+                             trade history. Sandbox/demo mode is hard-coded, no code path to
+                             your live account. Still no order placement (see Roadmap).
   db.py                   -> thin Supabase client wrapper (optional; see Setup)
   notify.py               -> output dispatcher: console / email / telegram
   email_notifier.py       -> SMTP delivery to your mailbox (e.g. Outlook)
@@ -64,9 +75,33 @@ supabase/schema.sql       -> run once in the Supabase SQL Editor to create the t
   at a time), so it needs more budget to cover the same required tools.
 - **Code-level, not prompt-level, guardrails**: `REQUIRED_TOOLS` blocks a
   final answer that skipped a mandatory tool, and `bullets.py` raises if
-  you try to open a second bullet while one is active, or exceed the
-  30-bullet cycle. Prompt wording alone ("you MUST call every tool")
-  was tested and found insufficient, even on Claude.
+  you try to open a second bullet on the same calendar day, or exceed
+  the 30-bullet lifetime cycle. Prompt wording alone ("you MUST call
+  every tool") was tested and found insufficient, even on Claude.
+- **BingX integration, hard-locked to demo mode**: BingX uses the SAME
+  API key for demo (VST/virtual funds) and live trading — the only thing
+  separating them is which base URL a request hits. Because the key
+  gives no guarantee, `bingx_client.py` hard-codes sandbox mode with no
+  parameter or env var able to turn it off, and there is currently no
+  code path anywhere that can place a live order — going live would
+  require deliberately writing new code, never a config flip.
+- **Auto-sized bullets, compounding by design**: if `collateral_usd` is
+  omitted, `open_bullet()` computes it from your real BingX balance
+  divided by 30 at the start of each round (reusing the same size for
+  every bullet within that round). A round that closes positive grows
+  the account balance, so the next round's division starts from a bigger
+  number — this is what lets a future autonomous version of this bot
+  size a bullet without a human typing an amount.
+- **Sync from trade history, not positions**: BingX MERGES same-symbol,
+  same-side positions into one row with an averaged entry price (opening
+  a position and later adding to it keeps the same `positionId` — a
+  same-side hedge mode doesn't create a second entry). Confirmed
+  empirically against a real demo account before trusting it. Individual
+  bullets are indistinguishable from `fetch_positions()`, so
+  `sync_with_bingx()` reads `fetch_my_trades()` instead — each fill keeps
+  its own order id, price, size and timestamp, which is what lets it
+  become its own bullet, linked via a unique `bingx_order_id` column so
+  syncing twice never double-creates one.
 - **Multi-agent report**: `run_daily_report()` coordinates two independent
   sub-agents — a Market Analyst (price/indicators/cycle/sentiment tools
   only) and a Portfolio Manager (DCA/bullet tools only), each with its
@@ -119,6 +154,12 @@ Python projects on the same machine if installed globally.
   `SUPABASE_URL` and `SUPABASE_KEY` (the `service_role` key) in `.env`.
   Skip this entirely to keep using the local JSON file — nothing else
   changes.
+- **BingX Demo Trading (optional)**: generate an API key at BingX ->
+  User Center -> API Management (read-only permissions are enough to
+  start), then set `BINGX_API_KEY` / `BINGX_API_SECRET` in `.env`. Run
+  `supabase/migration_bingx_order_id.sql` once if you already ran
+  `schema.sql` before this column existed. Needed for the `bingx-*`
+  commands and for bullet auto-sizing / `bullet-check`'s sync step.
 
 ## Usage
 
@@ -130,15 +171,23 @@ python main.py dca               # DCA summary (no LLM)
 python main.py metrics           # all raw market/cycle metrics (no LLM)
 python main.py bullet 500        # math of a 500 USD x5 bullet at the current price (no state)
 
-# --- Bullet phase: tracking manual leveraged positions on BingX ---
-# These commands NEVER touch the exchange. They only record what you
-# already did manually on BingX and compute the P&L from that.
-python main.py bullet-open 500           # record an open x5 bullet at the CURRENT price
+# --- Bullet phase: tracking leveraged positions on BingX ---
+# These commands NEVER place or cancel an order. They only record what
+# already happened (manually, or via bingx-sync reading real trades) and
+# compute the P&L from that. Bullets ACCUMULATE (at most one new one per
+# day); the target and close apply to the COMBINED currently-active set.
+python main.py bullet-open               # auto-size today's new bullet (BingX balance / 30) at the CURRENT price
+python main.py bullet-open 500           # override with an explicit 500 USD instead
 python main.py bullet-open 500 60000 5 15 # same, explicit entry / leverage / target %
-python main.py bullet-status             # live P&L of the open bullet (no notification)
-python main.py bullet-check              # same, and notify if target hit / near liquidation
-python main.py bullet-close tp           # close the bullet at the CURRENT price (outcome tp/manual)
-python main.py bullet-history            # summary of the 30-bullet cycle
+python main.py bullet-status             # live COMBINED P&L of all active bullets (no notification)
+python main.py bullet-check              # same, plus BingX sync (see below) and alerts if combined target hit / near liquidation
+python main.py bullet-close tp           # close ALL active bullets at the CURRENT price (outcome tp/manual)
+python main.py bullet-history            # summary of the 30-bullet lifetime cycle
+
+# --- BingX Demo Trading (VST) ---
+python main.py bingx-positions           # your REAL open positions (merged by BingX, see Design decisions)
+python main.py bingx-balance             # your VST (virtual funds) balance
+python main.py bingx-sync                # reconcile bullets against REAL trade history (also runs inside bullet-check)
 
 # --- Agent + tests ---
 python main.py report            # run the full agent and deliver the report
@@ -195,12 +244,20 @@ Netlify (no build command; output/root directory = `dashboard`).
 
 ## Roadmap
 
-1. **Memory**: compare against previous reports (now stored in
+1. **BingX auto-trading** (next): steps 1 (read) and 2 (auto-sync from
+   trade history into bullets, `bingx-sync`) are done and verified
+   against a real demo account. Remaining: let the agent place demo-only
+   practice trades itself, using the same auto-sizing (`balance / 30`)
+   already built for manual `bullet-open`. Still explicitly demo-only,
+   never touching the live account (see `bingx_client.py`'s safety
+   design) — this is a deliberate exception to the "agent never touches
+   the exchange" rule, scoped to practice trades on virtual funds only.
+2. **Memory**: compare against previous reports (now stored in
    `daily_snapshots`) to detect regime changes.
-2. **Telegram bidirectional bot**: respond to commands from the chat
-   (e.g. `/bullet-open 500`) talking directly to Supabase, same pattern
-   as the dashboard.
-3. **Backtesting**: simulate the 30-bullet cycle against historical BingX
+3. **Telegram bidirectional bot**: respond to commands from the chat
+   (e.g. `/bullet-open`) talking directly to Supabase, same pattern as
+   the dashboard.
+4. **Backtesting**: simulate the bullet cycle against historical BingX
    data.
 
 ## Disclaimer

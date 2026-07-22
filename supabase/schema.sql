@@ -19,7 +19,8 @@ create table if not exists dca_purchases (
 
 create table if not exists bullets (
     id bigint generated always as identity primary key,
-    bullet_number int not null,              -- position in the 30-bullet cycle (1..30)
+    bullet_number int not null,              -- position WITHIN its round (1..30, resets each round)
+    round_number int,                        -- which accumulation round this bullet belongs to
     status text not null check (status in ('open', 'tracking', 'closed_tp', 'closed_manual')),
     collateral_usd numeric not null check (collateral_usd > 0),
     entry_price numeric not null check (entry_price > 0),
@@ -33,15 +34,19 @@ create table if not exists bullets (
     closing_price numeric,
     outcome text check (outcome in ('tp', 'manual')),
     realized_pnl_usd numeric,
-    notes text
+    notes text,
+    -- BingX order ID that created this bullet, when opened via the
+    -- trade-history sync (src/bullets.py's sync_with_bingx()) instead of
+    -- manual bullet-open. NULL for manually-recorded bullets. Unique so
+    -- syncing twice never creates a duplicate bullet for the same order.
+    bingx_order_id text unique
 );
 
--- DB-level enforcement of "one bullet at a time": a partial unique index on
--- a constant expression means at most one row can have an active status.
--- Mirrors the application-level check in src/bullets.py -- belt and suspenders.
-create unique index if not exists bullets_one_active_idx
-    on bullets ((true))
-    where status in ('open', 'tracking');
+-- NOTE: there is deliberately NO uniqueness constraint limiting how many
+-- bullets can be active at once. The real strategy allows one NEW bullet
+-- per calendar day to accumulate on top of previously-opened ones; that
+-- guardrail (one open per day, not one active at a time) lives in code,
+-- in src/bullets.py's open_bullet(), not in the schema.
 
 create table if not exists daily_snapshots (
     id bigint generated always as identity primary key,

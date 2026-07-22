@@ -366,16 +366,25 @@
           sub: (last.tp_wins ?? 0) + " TP wins", subCls: clsSign(last.total_realized_pnl_usd) },
       ];
 
-      const openBullet = bullets.find(b => b.status === "open" || b.status === "tracking");
-      if (openBullet && price != null) {
-        const priceMovePct = (price - openBullet.entry_price) / openBullet.entry_price * 100;
-        const positionGainPct = priceMovePct * openBullet.leverage;
-        const unrealizedPnl = openBullet.collateral_usd * positionGainPct / 100;
+      // Bullets accumulate: the +15% target is evaluated on the COMBINED
+      // position across every active bullet, not per bullet. Sum unrealized
+      // P&L and collateral across all of them for the combined gain %.
+      const activeBullets = bullets.filter(b => b.status === "open" || b.status === "tracking");
+      if (activeBullets.length && price != null) {
+        let combinedCollateral = 0;
+        let combinedPnl = 0;
+        for (const b of activeBullets) {
+          const priceMovePct = (price - b.entry_price) / b.entry_price * 100;
+          const positionGainPct = priceMovePct * b.leverage;
+          combinedCollateral += b.collateral_usd;
+          combinedPnl += b.collateral_usd * positionGainPct / 100;
+        }
+        const combinedGainPct = combinedCollateral ? (combinedPnl / combinedCollateral * 100) : 0;
         cards.push({
-          label: `Bala #${openBullet.bullet_number} · P&L no realizado`,
-          value: fmtUsd(unrealizedPnl),
-          sub: fmtPct(positionGainPct) + " sobre la posición" + (isLive ? " · en vivo" : ""),
-          subCls: clsSign(unrealizedPnl),
+          label: `Ronda actual (${activeBullets.length} bala${activeBullets.length > 1 ? "s" : ""}) · P&L combinado`,
+          value: fmtUsd(combinedPnl),
+          sub: fmtPct(combinedGainPct) + " sobre el conjunto" + (isLive ? " · en vivo" : ""),
+          subCls: clsSign(combinedPnl),
         });
       }
 
