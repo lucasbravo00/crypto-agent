@@ -10,10 +10,13 @@ developer's shell environment or .env. Without step (2), a developer
 who has sourced their real .env could have tests silently write test
 data into their production Supabase project, or hit the real BingX API.
 
-STRATEGY UNDER TEST: bullets accumulate (at most one NEW bullet per
-calendar day, previous ones stay open), the +15% target is evaluated on
-the COMBINED position across every active bullet, and hitting it closes
-ALL active bullets together. See src/bullets.py's module docstring.
+STRATEGY UNDER TEST: bullets accumulate within a ROUND (at most one NEW
+bullet per calendar day, previous ones stay open), the +15% target is
+evaluated on the COMBINED position across every active bullet, and
+hitting it closes ALL active bullets together, ending the round.
+MAX_BULLETS_PER_ROUND (30) is a PER-ROUND cap, not a lifetime one: once
+a round closes, the next one starts over at bullet_number 1 with a
+fresh budget. See src/bullets.py's module docstring.
 """
 import math
 import pytest
@@ -38,16 +41,26 @@ def isolated_state(tmp_path, monkeypatch):
 
 
 def _insert_bullet(collateral_usd, entry_price, leverage=5.0, target_position_gain_pct=15.0,
-                    opened_at=None, status="open"):
+                    opened_at=None, status="open", round_number=None, bullet_number=None):
     """Insert a bullet directly via state.py, bypassing open_bullet()'s
-    one-NEW-bullet-per-day guardrail. Used to set up multi-bullet test
-    scenarios deterministically, regardless of what real calendar day the
-    test suite happens to run on (a test can't call open_bullet() twice
-    "today" without hitting that guardrail -- so scenarios needing several
-    bullets backdate all but one via this helper)."""
+    guardrails (one-NEW-bullet-per-day, round cap). Used to set up
+    multi-bullet test scenarios deterministically, regardless of what
+    real calendar day the suite happens to run on.
+
+    round_number/bullet_number auto-compute via the SAME logic
+    open_bullet() uses (bullets._next_bullet_position) unless given
+    explicitly -- most tests don't need to think about round bookkeeping
+    at all; only tests specifically about round transitions override them.
+    """
     math_result = simulate_bullet_math(collateral_usd, entry_price, leverage, target_position_gain_pct)
+    all_bullets = state_module.get_bullets()
+    active = bullets._find_active_bullets(all_bullets)
+    auto_round, auto_number = bullets._next_bullet_position(all_bullets, active)
+    round_number = auto_round if round_number is None else round_number
+    bullet_number = auto_number if bullet_number is None else bullet_number
     fields = {
         "status": status,
+        "round_number": round_number,
         "collateral_usd": collateral_usd,
         "entry_price": entry_price,
         "leverage": leverage,
@@ -62,7 +75,7 @@ def _insert_bullet(collateral_usd, entry_price, leverage=5.0, target_position_ga
         "realized_pnl_usd": None,
         "notes": None,
     }
-    return state_module.insert_bullet(fields)
+    return state_module.insert_bullet(fields, bullet_number)
 
 
 YESTERDAY = "2020-01-01T00:00:00+00:00"  # any date guaranteed != "today"
@@ -87,7 +100,8 @@ def test_default_state_does_not_share_nested_lists():
 
 def test_open_bullet_sets_expected_fields():
     b = bullets.open_bullet(collateral_usd=500, entry_price=60000, leverage=5, target_position_gain_pct=15)
-    assert b["id"] == 1
+    assert b["round_number"] == 1
+    assert b["bullet_number"] == 1
     assert b["status"] == "open"
     assert b["collateral_usd"] == 500
     assert b["entry_price"] == 60000
@@ -110,17 +124,49 @@ def test_open_bullet_different_day_accumulates():
     """A bullet opened on a previous day does NOT block opening today's --
     bullets accumulate instead of requiring the previous one closed."""
     _insert_bullet(500, 60000, opened_at=YESTERDAY)
-    # Today's open must succeed (no RuntimeError) and both stay active.
-    bullets.open_bullet(collateral_usd=300, entry_price=61000)
+    # Today's open must succeed (no RuntimeError) and both stay active,
+    # same round, bullet_number incrementing.
+    b2 = bullets.open_bullet(collateral_usd=300, entry_price=61000)
+    assert b2["round_number"] == 1
+    assert b2["bullet_number"] == 2
     active = bullets.get_active_bullets()
     assert len(active) == 2
 
 
-def test_open_bullet_cycle_full_raises():
-    for _ in range(bullets.MAX_BULLETS):
-        _insert_bullet(100, 60000, opened_at=YESTERDAY, status="closed_manual")
+def test_open_bullet_round_full_raises():
+    """30 ACTIVE bullets in the current round blocks a 31st -- this is a
+    PER-ROUND cap, not a lifetime one (see next test)."""
+    for _ in range(bullets.MAX_BULLETS_PER_ROUND):
+        _insert_bullet(100, 60000, opened_at=YESTERDAY, status="open")
     with pytest.raises(RuntimeError):
         bullets.open_bullet(collateral_usd=100, entry_price=60000)
+
+
+def test_round_number_and_bullet_number_reset_after_round_closes():
+    """The core behavior this design exists for: MAX_BULLETS_PER_ROUND is
+    NOT a lifetime cap. Once a round closes, the next one gets a fresh
+    30-bullet budget and bullet_number starts over at 1."""
+    b1 = _insert_bullet(500, 60000, leverage=5, opened_at=YESTERDAY)
+    assert b1["round_number"] == 1
+    assert b1["bullet_number"] == 1
+
+    b2 = bullets.open_bullet(collateral_usd=300, entry_price=61000, leverage=5)
+    assert b2["round_number"] == 1
+    assert b2["bullet_number"] == 2
+
+    bullets.close_all_active_bullets("tp", closing_price=62000)
+    assert bullets.get_active_bullets() == []
+
+    # The one-bullet-per-day guardrail is untouched by the round reset --
+    # today's slot was already used by b2.
+    with pytest.raises(RuntimeError):
+        bullets.open_bullet(collateral_usd=100, entry_price=62000)
+
+    # A backdated round-2 bullet must start over at bullet_number 1, in a
+    # NEW round_number -- not bullet_number 3 of round 1.
+    b3 = _insert_bullet(1000, 63000, leverage=5, opened_at=YESTERDAY)
+    assert b3["round_number"] == 2
+    assert b3["bullet_number"] == 1
 
 
 def test_open_bullet_persists_across_reload():
@@ -190,6 +236,7 @@ def test_check_bullets_single_bullet_matches_original_math():
     result = bullets.check_bullets(current_price=61800)  # exactly the target
     assert result["target_reached"] is True
     b = result["bullets"][0]
+    assert b["bullet_number"] == 1
     # +3% price move at x5 = +15% on the position.
     assert math.isclose(b["price_move_pct"], 3.0)
     assert math.isclose(b["position_gain_pct"], 15.0)
@@ -295,31 +342,34 @@ def test_close_all_active_bullets_without_active_raises():
 
 # --- get_cycle_summary ---
 
-def test_cycle_summary_aggregates_across_bullets():
-    # Bullet 1: TP win (+75), backdated so it doesn't collide with bullet 3.
-    b1 = _insert_bullet(500, 60000, leverage=5, opened_at=YESTERDAY)
-    state_module.update_bullet(b1["id"], {
-        "status": "closed_tp", "outcome": "tp", "closing_price": 61800,
-        "closed_at": bullets._now_iso(), "realized_pnl_usd": 75.0,
-    })
-    # Bullet 2: manual loss (-25), also backdated.
-    b2 = _insert_bullet(500, 60000, leverage=5, opened_at=YESTERDAY)
-    state_module.update_bullet(b2["id"], {
-        "status": "closed_manual", "outcome": "manual", "closing_price": 59400,
-        "closed_at": bullets._now_iso(), "realized_pnl_usd": -25.0,
-    })
-    # Bullet 3: opened today (real open_bullet call), still active.
-    bullets.open_bullet(collateral_usd=100, entry_price=58000, leverage=5)
+def test_cycle_summary_aggregates_across_rounds():
+    # Round 1: two bullets that close TOGETHER (as they always do in
+    # reality), backdated so they don't consume "today"'s slot.
+    b1 = _insert_bullet(500, 60000, leverage=5, opened_at=YESTERDAY, round_number=1, bullet_number=1)
+    b2 = _insert_bullet(500, 60000, leverage=5, opened_at=YESTERDAY, round_number=1, bullet_number=2)
+    for b, pnl in ((b1, 75.0), (b2, 50.0)):
+        state_module.update_bullet(b["id"], {
+            "status": "closed_tp", "outcome": "tp", "closing_price": 61800,
+            "closed_at": bullets._now_iso(), "realized_pnl_usd": pnl,
+        })
+
+    # Round 2: opened today via the real open_bullet() call -- must
+    # auto-detect this is a NEW round (no active bullets exist) and start
+    # over at bullet_number 1.
+    b3 = bullets.open_bullet(collateral_usd=100, entry_price=58000, leverage=5)
+    assert b3["round_number"] == 2
+    assert b3["bullet_number"] == 1
 
     summary = bullets.get_cycle_summary()
-    assert summary["max_bullets"] == 30
-    assert summary["bullets_used"] == 3
-    assert summary["bullets_remaining"] == 27
-    assert summary["closed"] == 2
-    assert summary["tp_wins"] == 1
-    assert math.isclose(summary["total_realized_pnl_usd"], 50.0)  # 75 - 25
+    assert summary["max_bullets_per_round"] == 30
+    assert summary["round_number"] == 2
+    assert summary["bullets_used_this_round"] == 1
+    assert summary["bullets_remaining_this_round"] == 29
+    assert summary["rounds_completed"] == 1
+    assert summary["tp_rounds"] == 1
+    assert math.isclose(summary["total_realized_pnl_usd"], 125.0)  # 75 + 50, lifetime across rounds
     assert summary["active_bullets_count"] == 1
-    assert summary["active_bullet_ids"] == [3]
+    assert summary["active_bullet_numbers"] == [1]
 
 
 # --- auto_trade() safety gate and orchestration ---

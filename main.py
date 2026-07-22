@@ -15,9 +15,11 @@ Entry point. Available commands:
     Bullets ACCUMULATE: at most one NEW bullet per calendar day, but
     previous ones stay open. The +15% target is evaluated on the
     COMBINED position across every active bullet, and when it's hit,
-    ALL active bullets close together in one action. Cycle is always 30
-    bullets: bullet size auto-computes as (BingX demo balance / 30) at
-    the start of each round, so a profitable round compounds into a
+    ALL active bullets close together in one action, ending the round --
+    the next one starts over from bullet 1 with a fresh 30-bullet budget
+    (this is a PER-ROUND cap, not a lifetime one; the bot can run
+    indefinitely). Bullet size auto-computes as (BingX demo balance / 30)
+    at the start of each round, so a profitable round compounds into a
     bigger bullet size next round -- no amount to type in by hand.
     python main.py bullet-open               -> auto-size today's new bullet (balance/30) at the CURRENT price
     python main.py bullet-open 500           -> override with an explicit 500 USD instead
@@ -26,7 +28,8 @@ Entry point. Available commands:
     python main.py bullet-check              -> same, and notify if combined target hit / any bullet near liquidation
     python main.py bullet-close tp           -> close ALL active bullets at the CURRENT price (outcome tp/manual)
     python main.py bullet-close manual 59000 "stopped out" -> close all at a given price with a note
-    python main.py bullet-history            -> summary of the 30-bullet lifetime cycle
+    python main.py bullet-history             -> current round's progress (out of 30 bullets)
+                                                plus lifetime totals across every round
 
 NOTE: bullet-* commands NEVER touch the exchange. They only record what
 you already did manually on BingX and compute the P&L from that.
@@ -122,9 +125,14 @@ def _record_snapshot(symbol: str, report_text: str) -> None:
             "total_invested_usd": dca["total_invested_usd"],
             "total_qty_btc": dca["total_qty_btc"],
             "avg_entry_price": dca["avg_entry_price"],
-            "bullets_used": bullet_cycle["bullets_used"],
-            "bullets_remaining": bullet_cycle["bullets_remaining"],
-            "tp_wins": bullet_cycle["tp_wins"],
+            # daily_snapshots keeps the original column names (bullets_used,
+            # bullets_remaining, tp_wins) even though bullets.py's own
+            # vocabulary is now round-based (bullets_used_this_round,
+            # etc.) -- avoids a DB migration + dashboard rewrite for what's
+            # still the same shape of info, just scoped to the current round.
+            "bullets_used": bullet_cycle["bullets_used_this_round"],
+            "bullets_remaining": bullet_cycle["bullets_remaining_this_round"],
+            "tp_wins": bullet_cycle["tp_rounds"],
             "total_realized_pnl_usd": bullet_cycle["total_realized_pnl_usd"],
             "report_text": report_text,
         })
