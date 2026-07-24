@@ -41,6 +41,7 @@ you already did manually on BingX and compute the P&L from that.
     python main.py bingx-balance         -> your VST (virtual USDT) balance
     python main.py bingx-sync            -> reconcile bullets against your REAL BingX trade
                                              history (also runs automatically inside bullet-check)
+    python main.py bingx-reconcile       -> defense in depth AFTER bingx-sync: verifies what
                                              Supabase/local state believes is active actually
                                              matches BingX's real open position (also runs
                                              automatically inside bullet-check, notifies on
