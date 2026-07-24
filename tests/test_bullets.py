@@ -439,3 +439,64 @@ def test_auto_trade_does_nothing_when_already_opened_today_and_target_not_reache
     result = bullets.auto_trade()
     assert result["traded"] is False
     assert result["reason"] == "nothing to do this cycle"
+
+
+# --- sync_with_bingx() ------------------------------------------------
+# REGRESSION (bug found 2026-07-24): a SELL fill's order id was never
+# persisted anywhere, so re-running sync_with_bingx() kept "seeing" the
+# same old, already-processed sell every time -- and matched it against
+# whatever bullets happened to be active AT THAT LATER SYNC, wrongly
+# closing brand new bullets using the old sell's stale price/time. Fixed
+# by stamping bingx_close_order_id on every bullet a sell closes, and
+# including it (not just bingx_order_id) in the "already seen" set.
+
+def _fake_trade(order_id, side, price, cost, when):
+    return {"order": order_id, "side": side, "price": price, "cost": cost, "datetime": when}
+
+
+def test_sync_with_bingx_opens_bullets_from_buy_fills(monkeypatch):
+    from src import bingx_client
+    monkeypatch.setattr(bingx_client, "is_enabled", lambda: True)
+    monkeypatch.setattr(bingx_client, "get_open_positions", lambda **kw: [])
+    monkeypatch.setattr(bingx_client, "get_trade_history", lambda **kw: [
+        _fake_trade("o1", "buy", 60000, 500, "2026-07-20T10:00:00Z"),
+    ])
+
+    result = bullets.sync_with_bingx()
+    assert len(result["opened"]) == 1
+    assert bullets.get_active_bullets()[0]["bingx_order_id"] == "o1"
+
+
+def test_sync_with_bingx_does_not_reclose_bullets_opened_after_an_old_sell(monkeypatch):
+    from src import bingx_client
+    monkeypatch.setattr(bingx_client, "is_enabled", lambda: True)
+    monkeypatch.setattr(bingx_client, "get_open_positions",
+                         lambda **kw: [{"leverage": 5.0}])
+
+    # Round 1: a buy, then a sell that closes it -- both already known
+    # (as if a previous sync already processed them).
+    trades = [
+        _fake_trade("o1", "buy", 60000, 500, "2026-07-20T10:00:00Z"),
+        _fake_trade("o2", "sell", 60600, 500, "2026-07-20T11:00:00Z"),
+    ]
+    monkeypatch.setattr(bingx_client, "get_trade_history", lambda **kw: list(trades))
+    bullets.sync_with_bingx()
+    assert bullets.get_active_bullets() == []
+
+    # Round 2: a NEW buy shows up days later. get_trade_history() still
+    # returns the FULL history (o1, o2 included) -- exactly what BingX's
+    # real endpoint does, and what re-triggered the bug.
+    trades.append(_fake_trade("o3", "buy", 61000, 500, "2026-07-24T10:00:00Z"))
+    bullets.sync_with_bingx()
+
+    active = bullets.get_active_bullets()
+    assert len(active) == 1
+    assert active[0]["bingx_order_id"] == "o3"
+
+    # The critical assertion: syncing AGAIN (e.g. the next 15-min cycle)
+    # must NOT re-process the old sell (o2) and close the bullet o3 just
+    # opened.
+    bullets.sync_with_bingx()
+    active = bullets.get_active_bullets()
+    assert len(active) == 1
+    assert active[0]["bingx_order_id"] == "o3"

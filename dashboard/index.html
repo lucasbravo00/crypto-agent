@@ -125,6 +125,7 @@
       padding: 16px;
     }
     .chart-box h3 { margin: 0 0 12px; font-size: 14px; font-weight: 600; }
+    .chart-note { color: var(--muted); font-size: 12px; margin: -6px 0 12px; line-height: 1.4; }
 
     /* Tables */
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -189,12 +190,39 @@
     </section>
 
     <section>
-      <h2>Series de tiempo</h2>
+      <h2>Ciclo de mercado (histórico completo)</h2>
+      <p class="section-note">Estos 4 gráficos usan el historial diario de BTC/USDT desde 2017 (vía Binance) y del Fear &amp; Greed Index desde 2018 (vía alternative.me) -- no dependen de cuánto tiempo lleva corriendo este agente, así que dan contexto real de en qué momento del ciclo estamos.</p>
+      <div class="chart-grid">
+        <div class="chart-box">
+          <h3>Precio BTC (USD) · histórico, escala log</h3>
+          <canvas id="chart-price-history"></canvas>
+        </div>
+        <div class="chart-box">
+          <h3>Mayer Multiple · histórico</h3>
+          <p class="chart-note">Precio actual dividido por el promedio móvil de 200 días. Históricamente &gt;2.4 marcó zonas de techo de ciclo, &lt;1 marcó zonas de piso.</p>
+          <canvas id="chart-mayer-history"></canvas>
+        </div>
+        <div class="chart-box">
+          <h3>Distancia a SMA 200 semanas (%) · histórico</h3>
+          <p class="chart-note">Cuánto está el precio por encima/debajo de su promedio de 200 semanas (~4 años). Otro indicador clásico de ciclo largo.</p>
+          <canvas id="chart-sma200w-history"></canvas>
+        </div>
+        <div class="chart-box">
+          <h3>Fear &amp; Greed Index · histórico</h3>
+          <canvas id="chart-fg-history"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Muy reciente</h2>
       <div class="chart-grid">
         <div class="chart-box"><h3>Precio BTC (USD) · cada 15 min</h3><canvas id="chart-price"></canvas></div>
-        <div class="chart-box"><h3>Fear &amp; Greed Index</h3><canvas id="chart-fg"></canvas></div>
-        <div class="chart-box"><h3>Mayer Multiple</h3><canvas id="chart-mayer"></canvas></div>
-        <div class="chart-box"><h3>Distancia a SMA 200 semanas (%)</h3><canvas id="chart-sma200w"></canvas></div>
+        <div class="chart-box">
+          <h3>Dominancia BTC (%)</h3>
+          <p class="chart-note">Solo acumula desde que corre este agente -- se va a ir extendiendo día a día. No encontré una fuente histórica gratuita confiable para dominancia.</p>
+          <canvas id="chart-dominance"></canvas>
+        </div>
       </div>
     </section>
 
@@ -277,7 +305,7 @@
       $("login").style.display = "flex";
     });
 
-    $("refresh-btn").addEventListener("click", () => loadData());
+    $("refresh-btn").addEventListener("click", () => { loadData(); loadMarketCycleCharts(); });
 
     async function init() {
       const { data: { session } } = await db.auth.getSession();
@@ -288,6 +316,10 @@
       $("login").style.display = "none";
       $("dashboard").style.display = "block";
       await loadData();
+      // Market cycle charts (full BTC + Fear&Greed history) are slow-
+      // moving and come from separate, heavier public APIs -- fetched
+      // once here, not on every 30s live-price tick or 15-min data load.
+      loadMarketCycleCharts();
       // Live price alone refreshes independently and more often -- it's a
       // single free public request, no reason to wait 15 minutes for it.
       setInterval(refreshLivePrice, 30000);
@@ -477,7 +509,7 @@
         </div>`).join("");
     }
 
-    function makeChart(canvasId, labels, data, color) {
+    function makeChart(canvasId, labels, data, color, opts = {}) {
       if (charts[canvasId]) charts[canvasId].destroy();
       charts[canvasId] = new Chart($(canvasId), {
         type: "line",
@@ -485,36 +517,122 @@
           labels,
           datasets: [{
             data, borderColor: color, backgroundColor: color + "22",
-            borderWidth: 2, pointRadius: 2, tension: 0.25, fill: true,
+            borderWidth: opts.thin ? 1.5 : 2, pointRadius: opts.thin ? 0 : 2,
+            tension: opts.thin ? 0.1 : 0.25, fill: opts.thin ? false : true,
           }],
         },
         options: {
           responsive: true,
+          animation: opts.thin ? false : true,
           plugins: { legend: { display: false } },
           scales: {
             x: { ticks: { color: "#8b94a3", maxTicksLimit: 6 }, grid: { color: "#2a313c" } },
-            y: { ticks: { color: "#8b94a3" }, grid: { color: "#2a313c" } },
+            y: { type: opts.yType || "linear", ticks: { color: "#8b94a3" }, grid: { color: "#2a313c" } },
           },
         },
       });
     }
 
     function renderCharts(snaps, ticks) {
-      // Price chart: prefer price_ticks (written every 15 min by
+      // Very-recent price: prefer price_ticks (written every 15 min by
       // bullet-check) for real intraday resolution. Falls back to the
       // once-a-day snapshots if ticks haven't started accumulating yet.
       const priceSeries = ticks.length ? ticks : snaps;
       const priceLabels = priceSeries.map(t => fmtDateTime(t.created_at));
       makeChart("chart-price", priceLabels, priceSeries.map(t => t.price), "#f7931a");
 
-      // Everything else only exists once a day in daily_snapshots -- these
-      // indicators are inherently slow-moving, no need for 15-min resolution.
+      // Dominance: only as long as this agent has been running (once/day
+      // in daily_snapshots) -- see the caveat note in the HTML. No free
+      // historical source found for this one.
       const labels = snaps.map(s => fmtDate(s.created_at));
-      makeChart("chart-fg", labels, snaps.map(s => s.fear_greed_value), "#3fb950");
-      makeChart("chart-mayer", labels, snaps.map(s => s.mayer_multiple), "#58a6ff");
-      makeChart("chart-sma200w", labels,
-        snaps.map(s => s.sma200w && s.price ? ((s.price - s.sma200w) / s.sma200w * 100) : null),
-        "#bc8cff");
+      makeChart("chart-dominance", labels, snaps.map(s => s.btc_dominance_pct), "#e3b341");
+    }
+
+    // ---- Market cycle: full-history charts, independent of how long
+    // this agent has been running. Fetched once per dashboard load (not
+    // on the 30s live-price tick) from two free, no-key public APIs.
+    function downsample(arr, everyN) {
+      return arr.filter((_, i) => i % everyN === 0);
+    }
+
+    function rollingSma(values, windowSize) {
+      const result = new Array(values.length).fill(null);
+      let sum = 0;
+      for (let i = 0; i < values.length; i++) {
+        sum += values[i];
+        if (i >= windowSize) sum -= values[i - windowSize];
+        if (i >= windowSize - 1) result[i] = sum / windowSize;
+      }
+      return result;
+    }
+
+    // CoinGecko's free public API caps historical data at the last 365
+    // days (confirmed empirically 2026-07-24 -- it used to allow
+    // days=max, no longer does without a paid plan) -- not enough to
+    // compute a 200-WEEK (1400-day) moving average. Binance's public
+    // klines endpoint has no such cap, needs no API key, and covers
+    // BTCUSDT back to 2017 -- paginated 1000 candles (Binance's max) per
+    // request.
+    async function fetchBinanceDailyCloses(symbol = "BTCUSDT") {
+      const all = [];
+      let startTime = new Date("2017-08-01T00:00:00Z").getTime();
+      const limit = 1000;
+      for (let i = 0; i < 8; i++) {  // safety cap, ~8000 days
+        const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1d&startTime=${startTime}&limit=${limit}`;
+        const res = await fetch(url);
+        if (!res.ok) break;
+        const rows = await res.json();
+        if (!rows.length) break;
+        for (const r of rows) all.push({ ts: r[0], price: Number(r[4]) });
+        if (rows.length < limit) break;
+        startTime = rows[rows.length - 1][0] + 24 * 60 * 60 * 1000;
+      }
+      return all;
+    }
+
+    async function loadMarketCycleCharts() {
+      try {
+        const [btcPrices, fngRes] = await Promise.all([
+          fetchBinanceDailyCloses(),
+          fetch("https://api.alternative.me/fng/?limit=0&format=json"),
+        ]);
+        const fngJson = await fngRes.json();
+
+        const fngHistory = (fngJson.data || [])
+          .map(d => ({ ts: Number(d.timestamp) * 1000, value: Number(d.value) }))
+          .reverse(); // alternative.me returns newest-first
+
+        if (!btcPrices.length) return;
+
+        const closes = btcPrices.map(p => p.price);
+        const sma200 = rollingSma(closes, 200);          // Mayer Multiple's denominator
+        const sma1400 = rollingSma(closes, 1400);         // ~200 weeks of daily closes
+
+        const mayer = closes.map((price, i) => sma200[i] ? price / sma200[i] : null);
+        const dist200w = closes.map((price, i) =>
+          sma1400[i] ? (price - sma1400[i]) / sma1400[i] * 100 : null);
+
+        // Thousands of daily points is more than the chart needs to look
+        // right and slower to render -- plot roughly weekly.
+        const step = 7;
+        const dsPoints = downsample(btcPrices, step);
+        const dsLabels = dsPoints.map(p => fmtDate(new Date(p.ts).toISOString()));
+
+        makeChart("chart-price-history", dsLabels, downsample(closes, step), "#f7931a",
+          { thin: true, yType: "logarithmic" });
+        makeChart("chart-mayer-history", dsLabels, downsample(mayer, step), "#58a6ff", { thin: true });
+        makeChart("chart-sma200w-history", dsLabels, downsample(dist200w, step), "#bc8cff", { thin: true });
+
+        const fngStep = 3;
+        const fngLabels = downsample(fngHistory, fngStep).map(d => fmtDate(new Date(d.ts).toISOString()));
+        makeChart("chart-fg-history", fngLabels,
+          downsample(fngHistory, fngStep).map(d => d.value), "#3fb950", { thin: true });
+      } catch (e) {
+        // Best-effort: these are independent public APIs with their own
+        // rate limits -- if either is down, the rest of the dashboard
+        // still works fine.
+        console.warn("Market cycle data fetch failed:", e);
+      }
     }
 
     function renderDcaTable(dca) {
