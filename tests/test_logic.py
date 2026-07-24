@@ -7,7 +7,8 @@ is the main reason to keep them separate from the LLM loop.
 import math
 import pytest
 
-from src.market_data import _sma, _rsi
+from src import market_data
+from src.market_data import _sma, _rsi, _true_range, _rma
 from src.strategy_tools import simulate_bullet_math
 
 
@@ -48,3 +49,45 @@ def test_bullet_math_rejects_invalid_input():
         simulate_bullet_math(collateral_usd=0, entry_price=60000)
     with pytest.raises(ValueError):
         simulate_bullet_math(collateral_usd=100, entry_price=-1)
+
+
+# --- Predictive Ranges [LuxAlgo] port -----------------------------------
+# candles: [ts, open, high, low, close, volume] -- open/volume unused.
+_PR_CANDLES = [
+    [0, 0, 10, 8, 9, 0],
+    [1, 0, 11, 9, 10, 0],
+    [2, 0, 12, 10, 11, 0],
+    [3, 0, 20, 18, 19, 0],  # a big move, big enough to trigger a jump once ATR warms up
+]
+
+
+def test_true_range():
+    trs = _true_range(_PR_CANDLES)
+    assert trs[0] is None
+    assert trs[1] == 2      # max(11-9, |11-9|, |9-9|)
+    assert trs[2] == 2      # max(12-10, |12-10|, |10-10|)
+    assert trs[3] == 9      # max(20-18, |20-11|, |18-11|)
+
+
+def test_rma_seeds_with_sma_then_smooths():
+    # period=2 over [2, 2, 9] (skipping the leading None)
+    rma = _rma(_true_range(_PR_CANDLES), period=2)
+    assert rma[0] is None
+    assert rma[1] is None            # not enough data yet
+    assert rma[2] == 2               # seed: sma([2, 2])
+    assert rma[3] == 5.5             # (2*(2-1) + 9) / 2
+
+
+def test_predictive_ranges_hand_computed(monkeypatch):
+    # Hand-computed with length=2, mult=1 (see conversation/commit notes):
+    # avg starts at 9, stays pinned during ATR warmup (nz(atr)=0), then
+    # jumps to 14.5 on the big bar 3 move once atr=5.5 kicks in, with
+    # hold_atr set to atr/2 = 2.75 at the moment of that jump.
+    monkeypatch.setattr(market_data, "get_ohlcv", lambda *a, **kw: _PR_CANDLES)
+    result = market_data.get_predictive_ranges(length=2, mult=1.0)
+    assert result["average"] == 14.5
+    assert result["resistance_1"] == 17.25
+    assert result["resistance_2"] == 20.0
+    assert result["support_1"] == 11.75
+    assert result["support_2"] == 9.0
+    assert result["current_price"] == 19

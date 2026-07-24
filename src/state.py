@@ -225,6 +225,24 @@ def record_snapshot(fields: dict) -> Optional[dict]:
     return client.table("daily_snapshots").insert(fields).execute().data[0]
 
 
+def get_snapshots(limit: int = 60) -> list[dict]:
+    """Read the most recent `limit` daily_snapshots rows, oldest first.
+    Empty list if Supabase isn't configured -- there is intentionally no
+    local-JSON equivalent for this table (see record_snapshot())."""
+    if not db.is_enabled():
+        return []
+    client = db.get_client()
+    rows = (
+        client.table("daily_snapshots")
+        .select("*")
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+        .data
+    )
+    return list(reversed(rows))
+
+
 # --- Price ticks (Supabase-only; no local-file equivalent) -------------
 # Higher-frequency than daily_snapshots: written every time
 # `bullet-check` runs (every 15 min via launchd), giving the dashboard's

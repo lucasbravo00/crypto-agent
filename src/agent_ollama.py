@@ -30,9 +30,9 @@ Key differences vs agent.py (interview-worthy details):
    per sub-agent) lets you compare this objectively against the Claude
    backend.
 
-Splitting into two smaller sub-agents (6 required tools for the Market
-Analyst, 3 for the Portfolio Manager, vs. 8 in the original single-agent
-design) also gives local models less to juggle in one pass, which helps
+Splitting into two smaller sub-agents (8 required tools for the Market
+Analyst, 3 for the Portfolio Manager) also gives local models less to
+juggle in one pass than one single combined agent would, which helps
 with the batching inconsistency described in MAX_ITERATIONS below.
 """
 from __future__ import annotations
@@ -42,7 +42,7 @@ from datetime import datetime, timezone
 
 import ollama
 
-from . import bullets, market_data, state, strategy_tools
+from . import bullets, market_data, memory, state, strategy_tools
 
 # Local model to use. Must be pulled beforehand:
 #   ollama pull llama3.1
@@ -64,6 +64,8 @@ MARKET_TOOL_FUNCTIONS = [
     market_data.get_cycle_metrics,
     market_data.get_fear_greed_index,
     market_data.get_btc_dominance,
+    market_data.get_predictive_ranges,
+    memory.get_market_memory,
 ]
 MARKET_REQUIRED_TOOLS = {fn.__name__ for fn in MARKET_TOOL_FUNCTIONS}
 
@@ -89,7 +91,8 @@ that is a separate sub-agent's job.
 
 1. You MUST call every one of these tools before writing your answer:
    get_current_date, get_price, get_indicators, get_cycle_metrics,
-   get_fear_greed_index, get_btc_dominance. Do not skip any.
+   get_fear_greed_index, get_btc_dominance, get_predictive_ranges,
+   get_market_memory. Do not skip any.
 2. NEVER state or imply a date/year from memory. If you reference
    "today", use only what get_current_date returned.
 3. ONLY report numbers and indicators that a tool call actually
@@ -97,14 +100,24 @@ that is a separate sub-agent's job.
    MACD, Bollinger Bands, an RSI on a timeframe you weren't given) that
    wasn't returned by one of the tools above. get_btc_dominance returns
    BITCOIN's dominance specifically — never attribute that number to any
-   other coin (e.g. BNB, ETH).
-4. Summarize the data clearly. NEVER give buy/sell signals or assert
-   whether the market's bottom or top has arrived — that call belongs
-   to the user alone.
-5. Close with 1-2 neutral lines about which market data is worth
+   other coin (e.g. BNB, ETH). get_predictive_ranges levels are an
+   approximation (limited chart history) — treat them as directional,
+   never as exact numbers.
+4. DO NOT just list numbers one after another. Interpret them together:
+   use get_market_memory's PRE-COMPUTED trend labels ("subiendo" /
+   "bajando" / "estable") to say what changed and over which window —
+   never recompute or contradict a trend label yourself, and treat
+   "sin_dato" windows as simply not having enough history yet, don't
+   guess around them. Relate the current price to the
+   get_predictive_ranges levels (e.g. near resistance_1, between average
+   and support_1, etc.). Cross-reference indicators when they reinforce
+   or contradict each other (e.g. RSI rising while Fear & Greed drops).
+5. NEVER give buy/sell signals or assert whether the market's bottom or
+   top has arrived — that call belongs to the user alone.
+6. Close with 1-2 neutral lines about which market data is worth
    watching over the next days (no trading instructions).
 
-Be concise: max ~120 words, plain text, no markdown headers (this text
+Be concise: max ~160 words, plain text, no markdown headers (this text
 is concatenated with another sub-agent's section afterward).
 Write in this language (ISO code): {language}."""
 

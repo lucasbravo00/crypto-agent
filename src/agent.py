@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 
 import anthropic
 
-from . import bullets, market_data, state, strategy_tools
+from . import bullets, market_data, memory, state, strategy_tools
 
 MODEL = "claude-sonnet-4-6"
 MAX_ITERATIONS = 10  # hard anti-infinite-loop cap, per sub-agent
@@ -116,6 +116,37 @@ _TOOL_GET_BTC_DOMINANCE = {
     "description": "BTC dominance percentage over total crypto market cap.",
     "input_schema": {"type": "object", "properties": {}},
 }
+_TOOL_GET_PREDICTIVE_RANGES = {
+    "name": "get_predictive_ranges",
+    "description": (
+        "Predictive Ranges [LuxAlgo]: an ATR-based central average line "
+        "plus two resistance levels above it (resistance_1, resistance_2) "
+        "and two support levels below it (support_1, support_2). Ported "
+        "from the user's own TradingView setup, computed from real BingX "
+        "daily candles. An approximation (limited to ~2.7 years of "
+        "history vs a full chart) -- treat the levels as directional "
+        "context, not exact numbers."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {"symbol": {"type": "string", "default": "BTC/USDT"}},
+    },
+}
+_TOOL_GET_MARKET_MEMORY = {
+    "name": "get_market_memory",
+    "description": (
+        "Compares today's price, RSI14, Fear & Greed, Mayer Multiple and "
+        "BTC dominance against 1, 7, and 30 days ago. Each metric/window "
+        "comes with a PRE-COMPUTED trend label: 'subiendo', 'bajando', "
+        "'estable', or 'sin_dato' if there isn't enough history yet. Use "
+        "these labels and deltas directly -- do not recompute or "
+        "second-guess a trend from the raw numbers yourself."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {"symbol": {"type": "string", "default": "BTC/USDT"}},
+    },
+}
 _TOOL_GET_DCA_SUMMARY = {
     "name": "get_dca_summary",
     "description": "Summary of the user's recorded DCA purchases: total invested, accumulated quantity and average entry price.",
@@ -145,6 +176,8 @@ MARKET_TOOLS = [
     _TOOL_GET_CYCLE_METRICS,
     _TOOL_GET_FEAR_GREED,
     _TOOL_GET_BTC_DOMINANCE,
+    _TOOL_GET_PREDICTIVE_RANGES,
+    _TOOL_GET_MARKET_MEMORY,
 ]
 MARKET_REQUIRED_TOOLS = {t["name"] for t in MARKET_TOOLS}
 
@@ -166,6 +199,8 @@ TOOL_IMPL = {
     "get_current_date": lambda **kw: market_data.get_current_date(),
     "get_fear_greed_index": lambda **kw: market_data.get_fear_greed_index(),
     "get_btc_dominance": lambda **kw: market_data.get_btc_dominance(),
+    "get_predictive_ranges": lambda **kw: market_data.get_predictive_ranges(**kw),
+    "get_market_memory": lambda **kw: memory.get_market_memory(**kw),
     "get_dca_summary": lambda **kw: state.get_dca_summary(),
     "get_bullet_status": lambda **kw: bullets.get_bullet_status(**kw),
 }
@@ -180,7 +215,8 @@ that is a separate sub-agent's job.
 
 1. You MUST call every one of these tools before writing your answer:
    get_current_date, get_price, get_indicators, get_cycle_metrics,
-   get_fear_greed_index, get_btc_dominance. Do not skip any.
+   get_fear_greed_index, get_btc_dominance, get_predictive_ranges,
+   get_market_memory. Do not skip any.
 2. NEVER state or imply a date/year from memory. If you reference
    "today", use only what get_current_date returned.
 3. ONLY report numbers and indicators that a tool call actually
@@ -188,16 +224,26 @@ that is a separate sub-agent's job.
    MACD, Bollinger Bands, an RSI on a timeframe you weren't given) that
    wasn't returned by one of the tools above. get_btc_dominance returns
    BITCOIN's dominance specifically — never attribute that number to any
-   other coin (e.g. BNB, ETH).
-4. Summarize the data clearly. NEVER give buy/sell signals or assert
-   whether the market's bottom or top has arrived — that call belongs
-   to the user alone. If a metric sits in a historically extreme zone
-   you may note that as a historical fact, clarifying it's no guarantee
-   about the future.
-5. Close with 1-2 neutral lines about which market data is worth
+   other coin (e.g. BNB, ETH). get_predictive_ranges levels are an
+   approximation (limited chart history) — treat them as directional,
+   never as exact numbers.
+4. DO NOT just list numbers one after another. Interpret them together:
+   use get_market_memory's PRE-COMPUTED trend labels ("subiendo" /
+   "bajando" / "estable") to say what changed and over which window —
+   never recompute or contradict a trend label yourself, and say
+   "sin_dato" windows simply don't have enough history yet, don't guess
+   around them. Relate the current price to the get_predictive_ranges
+   levels (e.g. near resistance_1, between average and support_1, etc.).
+   Cross-reference indicators when they reinforce or contradict each
+   other (e.g. RSI rising while Fear & Greed drops).
+5. NEVER give buy/sell signals or assert whether the market's bottom or
+   top has arrived — that call belongs to the user alone. If a metric
+   sits in a historically extreme zone you may note that as a historical
+   fact, clarifying it's no guarantee about the future.
+6. Close with 1-2 neutral lines about which market data is worth
    watching over the next days (no trading instructions).
 
-Be concise: max ~120 words, plain text, no markdown headers (this text
+Be concise: max ~160 words, plain text, no markdown headers (this text
 is concatenated with another sub-agent's section afterward).
 Write in this language (ISO code): {language}."""
 

@@ -184,3 +184,82 @@ def get_btc_dominance(**_ignored) -> dict:
         return resp.json()["data"]["market_cap_percentage"]["btc"]
     pct = _with_retries(_call)
     return {"btc_dominance_pct": round(pct, 2)}
+
+
+def _true_range(candles: list) -> list[Optional[float]]:
+    """True Range per candle: candles[i] = [ts, open, high, low, close, volume].
+    First candle has no previous close, so its TR is undefined (None)."""
+    trs: list[Optional[float]] = [None]
+    for i in range(1, len(candles)):
+        high, low = candles[i][2], candles[i][3]
+        prev_close = candles[i - 1][4]
+        trs.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+    return trs
+
+
+def _rma(values: list[Optional[float]], period: int) -> list[Optional[float]]:
+    """Wilder's moving average (what Pine Script's ta.atr uses under the
+    hood): seeded with a plain SMA of the first `period` values, then
+    recursively smoothed. `values[0]` is expected to be None (see
+    _true_range) and is skipped, matching Pine's bar-indexing."""
+    usable = values[1:]
+    result: list[Optional[float]] = [None]
+    if len(usable) < period:
+        return result + [None] * len(usable)
+    seed = sum(usable[:period]) / period
+    result += [None] * (period - 1) + [seed]
+    prev = seed
+    for v in usable[period:]:
+        prev = (prev * (period - 1) + v) / period
+        result.append(prev)
+    return result
+
+
+def get_predictive_ranges(
+    symbol: str = "BTC/USDT", timeframe: str = "1d", length: int = 200, mult: float = 6.0,
+) -> dict:
+    """Predictive Ranges [LuxAlgo] (CC BY-NC-SA 4.0), ported from the
+    original Pine Script. An ATR-based step function: a central "average"
+    line that only jumps when price strays further than `atr * mult` from
+    it, plus two bands above/below (R1/R2 resistance, S1/S2 support) sized
+    from half the ATR at the last jump.
+
+    APPROXIMATION CAVEAT: this indicator is recursive -- every bar's
+    result depends on the previous bar's, all the way back to the first
+    candle it's given. Pine computes it over a chart's FULL history;
+    we're limited to BingX's max of 1000 daily candles (~2.7 years) per
+    request. The ATR itself needs `length` (default 200) bars just to
+    warm up, leaving ~800 bars of real step behavior to converge --
+    plenty to be directionally useful, but the exact price levels may
+    not match TradingView bit-for-bit. Sanity-check against your own
+    chart before trusting it for anything precise.
+    """
+    candles = get_ohlcv(symbol, timeframe=timeframe, limit=1000)
+    closes = [c[4] for c in candles]
+    atr_series = _rma(_true_range(candles), length)
+
+    avg = closes[0]
+    hold_atr = 0.0
+    for i in range(1, len(candles)):
+        atr = (atr_series[i] or 0.0) * mult  # nz(ta.atr(length)) -- 0 during warmup
+        src = closes[i]
+        prev_avg = avg
+        if src - avg > atr:
+            avg = avg + atr
+        elif avg - src > atr:
+            avg = avg - atr
+        if avg != prev_avg:
+            hold_atr = atr / 2
+
+    return {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "length": length,
+        "mult": mult,
+        "current_price": round(closes[-1], 2),
+        "resistance_2": round(avg + hold_atr * 2, 2),
+        "resistance_1": round(avg + hold_atr, 2),
+        "average": round(avg, 2),
+        "support_1": round(avg - hold_atr, 2),
+        "support_2": round(avg - hold_atr * 2, 2),
+    }
