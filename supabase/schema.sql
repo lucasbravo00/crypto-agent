@@ -44,7 +44,14 @@ create table if not exists bullets (
     -- trade-history sync (src/bullets.py's sync_with_bingx()) instead of
     -- manual bullet-open. NULL for manually-recorded bullets. Unique so
     -- syncing twice never creates a duplicate bullet for the same order.
-    bingx_order_id text unique
+    bingx_order_id text unique,
+    -- BingX order ID of the SELL fill that closed this bullet, when
+    -- closed via sync_with_bingx(). NOT unique (every bullet closed in
+    -- the same round-ending sell shares this value) -- but critical:
+    -- without persisting it, that same historical sell fill gets
+    -- replayed on every later sync and wrongly re-closes whatever
+    -- bullets happen to be active at that later point (fixed 2026-07-24).
+    bingx_close_order_id text
 );
 
 -- NOTE: there is deliberately NO uniqueness constraint limiting how many

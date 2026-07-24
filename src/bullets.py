@@ -352,6 +352,7 @@ def close_all_active_bullets(
     closing_price: float,
     notes: str | None = None,
     closed_at: str | None = None,
+    bingx_close_order_id: str | None = None,
 ) -> list[dict]:
     """Record the close of EVERY currently active bullet together, in one
     action (does NOT touch the exchange) -- this ends the round. Each
@@ -366,6 +367,12 @@ def close_all_active_bullets(
         notes: Optional free-text note, applied to every closed bullet.
         closed_at: ISO timestamp to record as the close time. Defaults to
             now; sync_with_bingx() passes the real BingX fill time instead.
+        bingx_close_order_id: The BingX SELL fill's order id, when this
+            close came from sync_with_bingx(). Stamped on every bullet
+            closed here so that SAME sell fill is never reprocessed on a
+            later sync -- see sync_with_bingx()'s module note on why this
+            matters (a replayed old sell fill was wrongly re-closing
+            bullets opened AFTER it, confirmed 2026-07-24).
 
     Returns:
         The list of updated (now terminal) bullet records.
@@ -402,6 +409,7 @@ def close_all_active_bullets(
             "closed_at": closed_at,
             "realized_pnl_usd": round(realized_pnl_usd, 2),
             "notes": notes,
+            "bingx_close_order_id": bingx_close_order_id,
         }))
 
     return closed
@@ -523,8 +531,19 @@ def sync_with_bingx() -> dict:
         return {"synced": False, "reason": "BingX not configured", "opened": [], "closed": []}
 
     trades = bingx_client.get_trade_history()
+    all_bullets_snapshot = state_module.get_bullets()
+    # BUG FIXED 2026-07-24: this used to only track bingx_order_id (BUY
+    # fills). A SELL fill's order id was never persisted anywhere, so
+    # get_trade_history() kept returning that same old SELL on every
+    # sync run, and it kept matching against whatever bullets happened
+    # to be active AT THAT LATER MOMENT -- wrongly re-closing bullets
+    # opened well after the real sell happened. Tracking
+    # bingx_close_order_id too makes every fill (buy AND sell)
+    # permanently "seen" after its first sync.
     known_order_ids = {
-        b["bingx_order_id"] for b in state_module.get_bullets() if b.get("bingx_order_id")
+        b[field] for b in all_bullets_snapshot
+        for field in ("bingx_order_id", "bingx_close_order_id")
+        if b.get(field)
     }
 
     # Leverage isn't on the trade itself -- read it from the currently
@@ -563,7 +582,9 @@ def sync_with_bingx() -> dict:
                 continue  # a reduce/close we have nothing active to match against
             live = check_bullets(price)
             outcome = "tp" if live["target_reached"] else "manual"
-            closed.extend(close_all_active_bullets(outcome, price, closed_at=trade_time))
+            closed.extend(close_all_active_bullets(
+                outcome, price, closed_at=trade_time, bingx_close_order_id=order_id,
+            ))
 
     return {"synced": True, "opened": opened, "closed": closed}
 
