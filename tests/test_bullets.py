@@ -500,3 +500,57 @@ def test_sync_with_bingx_does_not_reclose_bullets_opened_after_an_old_sell(monke
     active = bullets.get_active_bullets()
     assert len(active) == 1
     assert active[0]["bingx_order_id"] == "o3"
+
+
+# --- reconcile_with_bingx() ---------------------------------------------
+# Defense in depth added after the sync bug above: even if sync_with_bingx()
+# runs "successfully", verify what we THINK is open still matches BingX's
+# real reported position.
+
+def test_reconcile_not_checked_when_bingx_disabled(monkeypatch):
+    from src import bingx_client
+    monkeypatch.setattr(bingx_client, "is_enabled", lambda: False)
+    result = bullets.reconcile_with_bingx()
+    assert result["checked"] is False
+
+
+def test_reconcile_ok_when_amounts_match(monkeypatch):
+    from src import bingx_client
+    monkeypatch.setattr(bingx_client, "is_enabled", lambda: True)
+    # 500 collateral * 5x / 60000 entry = 0.041666... BTC
+    _insert_bullet(500, 60000, leverage=5, opened_at=YESTERDAY)
+    monkeypatch.setattr(bingx_client, "get_open_positions",
+                         lambda **kw: [{"contracts": 500 * 5 / 60000}])
+
+    result = bullets.reconcile_with_bingx()
+    assert result["checked"] is True
+    assert result["ok"] is True
+    assert result["diff_btc"] < bullets.RECONCILE_TOLERANCE_BTC
+
+
+def test_reconcile_flags_mismatch(monkeypatch):
+    from src import bingx_client
+    monkeypatch.setattr(bingx_client, "is_enabled", lambda: True)
+    _insert_bullet(500, 60000, leverage=5, opened_at=YESTERDAY)
+    # BingX reports nothing open at all -- exactly the bug scenario: our
+    # state thinks a bullet is active but the sync history wrongly closed
+    # (or never opened) the matching real position.
+    monkeypatch.setattr(bingx_client, "get_open_positions", lambda **kw: [])
+
+    result = bullets.reconcile_with_bingx()
+    assert result["checked"] is True
+    assert result["ok"] is False
+    assert result["real_amount_btc"] == 0
+    assert result["active_amount_btc"] > 0
+
+
+def test_reconcile_ok_when_nothing_active_and_nothing_open(monkeypatch):
+    from src import bingx_client
+    monkeypatch.setattr(bingx_client, "is_enabled", lambda: True)
+    monkeypatch.setattr(bingx_client, "get_open_positions", lambda **kw: [])
+
+    result = bullets.reconcile_with_bingx()
+    assert result["checked"] is True
+    assert result["ok"] is True
+    assert result["active_amount_btc"] == 0
+    assert result["real_amount_btc"] == 0

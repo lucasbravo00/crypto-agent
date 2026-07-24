@@ -41,6 +41,10 @@ you already did manually on BingX and compute the P&L from that.
     python main.py bingx-balance         -> your VST (virtual USDT) balance
     python main.py bingx-sync            -> reconcile bullets against your REAL BingX trade
                                              history (also runs automatically inside bullet-check)
+                                             Supabase/local state believes is active actually
+                                             matches BingX's real open position (also runs
+                                             automatically inside bullet-check, notifies on
+                                             mismatch). Exits non-zero if a mismatch is found.
     python main.py bingx-auto-trade      -> places a REAL (demo) order if one is due today
                                              (also runs automatically inside bullet-check, but
                                              ONLY if BINGX_AUTO_TRADE_ENABLED=true in .env)
@@ -288,6 +292,27 @@ def cmd_bullet_check():
         except Exception as exc:
             print(f"⚠️ Could not sync with BingX: {exc}")
 
+        # Defense in depth AFTER sync: verify what we THINK is open
+        # actually matches BingX's real position, instead of trusting
+        # that sync completing without an exception means it did the
+        # right thing (see bullets.reconcile_with_bingx()'s docstring --
+        # this is exactly the class of bug that silently re-closed real
+        # bullets on 2026-07-24 without ever raising).
+        try:
+            reconcile = bullets.reconcile_with_bingx()
+            if reconcile["checked"] and not reconcile["ok"]:
+                msg = (
+                    f"⚠️ Reconciliation mismatch: Supabase thinks "
+                    f"{reconcile['active_amount_btc']} BTC is active in bullets, "
+                    f"but BingX reports {reconcile['real_amount_btc']} BTC actually "
+                    f"open (diff {reconcile['diff_btc']} BTC). Bullet state may be "
+                    f"wrong -- check manually before trusting the dashboard/report."
+                )
+                print(msg)
+                notify.notify(msg, subject_prefix="Bullet state mismatch")
+        except Exception as exc:
+            print(f"⚠️ Could not reconcile with BingX: {exc}")
+
         # DCA leg: read-only against your REAL (non-demo) spot wallet --
         # see bingx_client.py's "REAL account access" section.
         from src import dca
@@ -376,6 +401,14 @@ def cmd_bingx_sync():
     print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
 
 
+def cmd_bingx_reconcile():
+    from src import bullets
+    result = bullets.reconcile_with_bingx()
+    print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+    if result["checked"] and not result["ok"]:
+        sys.exit(1)
+
+
 def cmd_bingx_auto_trade(args: list[str]):
     from src import bullets
     test = "--test" in args
@@ -420,6 +453,8 @@ if __name__ == "__main__":
         cmd_bingx_balance()
     elif cmd == "bingx-sync":
         cmd_bingx_sync()
+    elif cmd == "bingx-reconcile":
+        cmd_bingx_reconcile()
     elif cmd == "bingx-auto-trade":
         cmd_bingx_auto_trade(rest)
     else:

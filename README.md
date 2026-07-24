@@ -1,27 +1,35 @@
 # Crypto Strategy Agent
 
 An LLM tool-calling agent that builds an objective daily report on BTC
-market context, your DCA accumulation progress, and (once you're in that
-phase) your manual leveraged "bullet" cycle on BingX — delivered to your
-mailbox (e.g. Outlook), Telegram, or the console.
+market context, your real DCA accumulation, and your leveraged "bullet"
+strategy — delivered to your mailbox (e.g. Outlook), Telegram, or the
+console.
 
-The agent never trades and never gives buy/sell signals: it gathers
-data, summarizes it, and leaves every decision to the human (deliberate
-human-in-the-loop design). It supports the user's real strategy, which
-runs entirely outside the code:
+The agent never trades and never gives buy/sell signals for real money:
+it gathers data, summarizes it, and leaves every decision to the human
+(deliberate human-in-the-loop design). The one deliberate, narrowly
+scoped exception is `bullets.auto_trade()`, which can place orders
+**only** on BingX's Demo Trading (VST/virtual funds) account, and only
+if you explicitly opt in — see "BingX integration" below. The real
+strategy this project supports, BTC only, runs as two parallel legs:
 
-1. **DCA phase** (current): accumulate BTC via manual spot purchases
-   during a bear market, recorded with `python main.py buy`.
-2. **Bullet phase** (once the user decides — manually — that a bull
-   market has started): x5 leveraged futures positions ("bullets") on
-   BingX, at most one NEW one per calendar day, up to a lifetime cap of
-   30. Bullets **accumulate** — the previous ones stay open while a new
-   one is added each day. The +15% target is evaluated on the
-   **combined** position across every currently active bullet, not per
-   bullet; when the combined gain hits +15%, ALL active bullets close
-   together and the cycle continues. Opened and closed by hand on the
-   exchange; this project only *records* what happened and computes the
-   math/P&L from it.
+1. **DCA (real money, ongoing)**: weekly BTC spot purchases on BingX.
+   Auto-imported from your real trade history (`dca-sync`) — nothing to
+   type by hand. Between buys, the BTC is rotated out to Nexo for yield,
+   so BingX's spot wallet itself isn't a meaningful "money in account"
+   figure; current DCA value is computed from the purchase history
+   directly, wherever the BTC physically sits.
+2. **Bullets (currently testing on BingX Demo/VST)**: x5 leveraged
+   futures positions, at most one NEW one per calendar day, accumulating
+   within a **round**. The +15% target is evaluated on the **combined**
+   position across every currently active bullet, not per bullet; when
+   it's hit, ALL active bullets close together, ending the round. Each
+   round has its own fresh 30-bullet budget (`MAX_BULLETS_PER_ROUND`) —
+   this resets every round, it is not a lifetime cap. Bullet size
+   auto-computes as `(BingX balance / 30)` at the start of each round, so
+   a profitable round compounds into bigger bullets next round. Real
+   money starts here in roughly 3 months; until then this runs entirely
+   on demo/virtual funds to prove the strategy and the code out.
 
 ## Architecture
 
@@ -33,31 +41,47 @@ src/
                              weekly RSI), fear & greed, BTC dominance
                              (BingX/CoinGecko), all with retry logic
   strategy_tools.py       -> pure math of a leveraged bullet position (no network)
-  state.py                -> stateful tool: DCA purchases + bullets, dual backend (see below)
-  bullets.py              -> bullet state machine: open -> tracking -> closed_tp/closed_manual.
-                             Bullets accumulate (one NEW bullet/day, up to 30 lifetime); the
-                             +15% target and closes apply to the COMBINED active set, not per
-                             bullet. Bullet size auto-computes as (BingX balance / 30) at the
-                             start of each round if not given explicitly. sync_with_bingx()
-                             reconciles bullets against REAL BingX trade history.
-  bingx_client.py         -> BingX Demo Trading (VST) access via ccxt: reads positions/balance/
-                             trade history. Sandbox/demo mode is hard-coded, no code path to
-                             your live account. Still no order placement (see Roadmap).
-  db.py                   -> thin Supabase client wrapper (optional; see Setup)
-  notify.py               -> output dispatcher: console / email / telegram
-  email_notifier.py       -> SMTP delivery to your mailbox (e.g. Outlook)
-  telegram_notifier.py    -> Telegram delivery (optional)
-  agent.py                -> two coordinated sub-agents (Market Analyst,
+  state.py                -> stateful tool: DCA purchases + bullets + account/price
+                             ticks, dual backend (see below)
+  bullets.py              -> bullet state machine: open -> tracking -> closed_tp/closed_manual,
+                             organized into ROUNDS (see above). Two separate ids per
+                             bullet: "id" (globally unique, safe update key) vs
+                             "bullet_number" (resets every round, display-only).
+                             sync_with_bingx() reconciles bullets against REAL BingX
+                             trade history; reconcile_with_bingx() is a read-only,
+                             independent second check that what we THINK is active
+                             still matches BingX's real position (see Design decisions).
+                             auto_trade() is the only function that can place a real
+                             (demo-only) order.
+  dca.py                  -> sync_with_bingx() imports real spot BTC buy fills from
+                             your REAL BingX account into dca_purchases, deduped by
+                             trade id -- no manual entry needed once it's set up.
+  bingx_client.py         -> BingX access via ccxt, split into two clearly separated
+                             halves: (1) DEMO/sandbox trading -- hard-coded, no code
+                             path to your live account, can place orders (used only by
+                             bullets.auto_trade()); (2) REAL account, READ-ONLY -- used
+                             only to import real DCA trade history/balance, never
+                             places an order.
+  db.py                    -> thin Supabase client wrapper (optional; see Setup)
+  notify.py                -> output dispatcher: console / email / telegram
+  email_notifier.py        -> SMTP delivery to your mailbox (e.g. Outlook)
+  telegram_notifier.py     -> Telegram delivery (optional)
+  agent.py                 -> two coordinated sub-agents (Market Analyst,
                              Portfolio Manager) on the Claude API
-  agent_ollama.py         -> the SAME two-sub-agent design on a local
+  agent_ollama.py           -> the SAME two-sub-agent design on a local
                              model via Ollama
 tests/
-  test_logic.py           -> unit tests for market_data/strategy_tools (no network, no LLM)
-  test_bullets.py         -> unit tests for the bullet state machine (isolated temp state,
-                             Supabase force-disabled regardless of the ambient environment)
-state/                    -> local JSON state, used only when Supabase isn't configured
-logs/                     -> JSONL trace of every agent decision (auto-created)
-supabase/schema.sql       -> run once in the Supabase SQL Editor to create the tables
+  test_logic.py            -> unit tests for market_data/strategy_tools (no network, no LLM)
+  test_bullets.py          -> unit tests for the bullet state machine, including sync
+                             and reconciliation (isolated temp state, Supabase/BingX
+                             force-disabled regardless of the ambient environment)
+  test_dca.py               -> unit tests for DCA sync against (mocked) BingX
+state/                     -> local JSON state, used only when Supabase isn't configured
+logs/                      -> JSONL trace of every agent decision (auto-created)
+dashboard/index.html       -> single-file web dashboard (see "Web dashboard" below)
+supabase/schema.sql        -> run once in the Supabase SQL Editor to create the tables
+supabase/migration_*.sql   -> incremental migrations, run in order if your project
+                             predates a given feature (each file explains why it exists)
 ```
 
 ## Design decisions
@@ -76,32 +100,66 @@ supabase/schema.sql       -> run once in the Supabase SQL Editor to create the t
 - **Code-level, not prompt-level, guardrails**: `REQUIRED_TOOLS` blocks a
   final answer that skipped a mandatory tool, and `bullets.py` raises if
   you try to open a second bullet on the same calendar day, or exceed
-  the 30-bullet lifetime cycle. Prompt wording alone ("you MUST call
-  every tool") was tested and found insufficient, even on Claude.
-- **BingX integration, hard-locked to demo mode**: BingX uses the SAME
-  API key for demo (VST/virtual funds) and live trading — the only thing
-  separating them is which base URL a request hits. Because the key
-  gives no guarantee, `bingx_client.py` hard-codes sandbox mode with no
-  parameter or env var able to turn it off, and there is currently no
-  code path anywhere that can place a live order — going live would
-  require deliberately writing new code, never a config flip.
+  the round's 30-bullet cap. Prompt wording alone ("you MUST call every
+  tool") was tested and found insufficient, even on Claude.
+- **Rounds, not a lifetime cap**: the strategy allows bullets to
+  accumulate (one new one/day) up to 30 within a round; when the
+  combined position hits +15%, ALL active bullets close together and a
+  **new** round starts from bullet 1 with a fresh 30-bullet budget. This
+  required separating each bullet's globally-unique `id` (the only safe
+  key for updates) from its `bullet_number` (position within the current
+  round — resets every round, so two different bullets from two
+  different rounds can legitimately share one). Getting this wrong once,
+  before the split existed, would have let `update_bullet()` silently
+  corrupt a closed bullet from an earlier round that happened to share a
+  `bullet_number` with a currently-active one.
+- **Sync from trade history, not positions**: BingX MERGES same-symbol,
+  same-side positions into one row with an averaged entry price (opening
+  a position and later adding to it keeps the same `positionId`).
+  Confirmed empirically against a real demo account before trusting it.
+  Individual bullets are indistinguishable from `fetch_positions()`, so
+  `sync_with_bingx()` reads `fetch_my_trades()` instead — each fill keeps
+  its own order id, price, size and timestamp, which is what lets it
+  become its own bullet, linked via a unique `bingx_order_id` column so
+  syncing twice never double-creates one.
+- **Reconciliation is a SEPARATE check from sync, on purpose**: a real
+  bug (2026-07-24) showed that `sync_with_bingx()` completing without an
+  exception is not proof it did the right thing — a SELL fill's order id
+  was never persisted, so every later sync re-processed that same old
+  fill and silently re-closed bullets that had opened well after it,
+  using its stale price/timestamp. Fixed by persisting
+  `bingx_close_order_id` too, but also by adding
+  `reconcile_with_bingx()`: an independent, read-only check (run every
+  `bullet-check`) that re-derives the BTC amount implied by whatever
+  bullets are currently marked active and compares it against BingX's
+  own reported open position, notifying a human on any mismatch instead
+  of assuming sync's bookkeeping is correct. Lesson generalized: don't
+  trust a write path's own success signal to also mean the resulting
+  state is correct — verify independently, especially before real money
+  is involved.
+- **BingX integration, split into two independent halves**: BingX uses
+  the SAME API key for demo (VST/virtual funds) and live trading — the
+  only thing separating them is which base URL a request hits, so the
+  key itself gives no guarantee. `bingx_client.py` hard-codes sandbox
+  mode for everything related to bullets, with no parameter or env var
+  able to turn it off — the ONLY function anywhere that can place an
+  order is `bullets.auto_trade()`, gated by an explicit, off-by-default
+  `BINGX_AUTO_TRADE_ENABLED` env var on top of that hard-coded demo lock
+  (two independent gates have to agree). Separately, a small **real,
+  read-only** half (`get_real_spot_trades`, `get_real_spot_balance`)
+  exists only to import DCA purchase history — by convention no function
+  built on that real client may ever call `create_order`.
+- **`test` order param is NOT a safe dry-run**: confirmed empirically
+  (2026-07-22) that BingX's own "validates without executing" endpoint
+  parameter can still execute a real demo order. Documented prominently
+  in `bingx_client.py`; never assumed to be risk-free again.
 - **Auto-sized bullets, compounding by design**: if `collateral_usd` is
   omitted, `open_bullet()` computes it from your real BingX balance
   divided by 30 at the start of each round (reusing the same size for
   every bullet within that round). A round that closes positive grows
   the account balance, so the next round's division starts from a bigger
-  number — this is what lets a future autonomous version of this bot
-  size a bullet without a human typing an amount.
-- **Sync from trade history, not positions**: BingX MERGES same-symbol,
-  same-side positions into one row with an averaged entry price (opening
-  a position and later adding to it keeps the same `positionId` — a
-  same-side hedge mode doesn't create a second entry). Confirmed
-  empirically against a real demo account before trusting it. Individual
-  bullets are indistinguishable from `fetch_positions()`, so
-  `sync_with_bingx()` reads `fetch_my_trades()` instead — each fill keeps
-  its own order id, price, size and timestamp, which is what lets it
-  become its own bullet, linked via a unique `bingx_order_id` column so
-  syncing twice never double-creates one.
+  number — this is what lets `auto_trade()` size a bullet with no human
+  typing an amount.
 - **Multi-agent report**: `run_daily_report()` coordinates two independent
   sub-agents — a Market Analyst (price/indicators/cycle/sentiment tools
   only) and a Portfolio Manager (DCA/bullet tools only), each with its
@@ -111,22 +169,23 @@ supabase/schema.sql       -> run once in the Supabase SQL Editor to create the t
   giving the market analyst fewer, more focused tools didn't stop the
   local Ollama model from once fabricating an indicator we never gave it
   (MACD) and once mislabeling BTC dominance as BNB's — fixed with an
-  explicit "only report what a tool actually returned" rule in the
-  prompt, the same category of fix as the `get_current_date` lesson from
-  Phase 1: never let the model infer what a tool could tell it instead.
+  explicit "only report what a tool actually returned" rule in the prompt.
 - **Retries with backoff** on all network calls (public APIs fail
   sporadically).
 - **Structured JSONL logging** of every tool call, its input and its
   result, so any report can be audited after the fact.
-- **Human-in-the-loop by design**: the agent informs; it never executes
-  trades or emits signals.
+- **Human-in-the-loop by design**: the agent informs; the ONLY code path
+  that can execute anything against real infrastructure is the
+  demo-only, opt-in `auto_trade()` — everything touching real money
+  (DCA, the report, the dashboard) is purely read-only or requires a
+  human to type a command.
 - **Dual storage backend, chosen at call time**: if `SUPABASE_URL` /
-  `SUPABASE_KEY` are set, DCA purchases and bullets live in Postgres
-  (Supabase) instead of the local JSON file — this is what lets state be
-  shared between your Mac and GitHub Actions. If unset, everything falls
-  back to the JSON file exactly as in the original single-machine design.
-  Tests force-disable Supabase regardless of the ambient environment, so
-  they never touch the real database.
+  `SUPABASE_KEY` are set, all state (DCA purchases, bullets, price/account
+  ticks) lives in Postgres (Supabase) instead of the local JSON file —
+  this is what lets state be shared between your Mac and GitHub Actions.
+  If unset, everything falls back to the JSON file. Tests force-disable
+  Supabase and BingX regardless of the ambient environment, so they never
+  touch real data.
 
 ## Setup
 
@@ -144,6 +203,7 @@ Python projects on the same machine if installed globally.
   set `ANTHROPIC_API_KEY`.
 - **Ollama backend**: install https://ollama.com, run
   `ollama pull llama3.1`, and set `LLM_BACKEND=ollama`.
+- **Report language**: set `REPORT_LANGUAGE` (ISO code, e.g. `en`, `es`).
 - **Email delivery**: Outlook/Microsoft removed basic-auth SMTP sending
   (fully rejected since April 2026), so the report is sent *from* another
   SMTP provider (Gmail app password, or Brevo's free tier) *to* your
@@ -153,41 +213,50 @@ Python projects on the same machine if installed globally.
   run `supabase/schema.sql` once in its SQL Editor, then set
   `SUPABASE_URL` and `SUPABASE_KEY` (the `service_role` key) in `.env`.
   Skip this entirely to keep using the local JSON file — nothing else
-  changes.
-- **BingX Demo Trading (optional)**: generate an API key at BingX ->
-  User Center -> API Management (read-only permissions are enough to
-  start), then set `BINGX_API_KEY` / `BINGX_API_SECRET` in `.env`. Run
-  `supabase/migration_bingx_order_id.sql` once if you already ran
-  `schema.sql` before this column existed. Needed for the `bingx-*`
-  commands and for bullet auto-sizing / `bullet-check`'s sync step.
+  changes. If your project predates a feature, run the relevant
+  `supabase/migration_*.sql` file(s) in order (each explains what it's
+  for and why).
+- **BingX (optional, one API key covers both halves)**: generate an API
+  key at BingX -> User Center -> API Management, then set
+  `BINGX_API_KEY` / `BINGX_API_SECRET` in `.env`. This single key is used
+  for both the demo bullets integration (`bingx-*` commands,
+  `bullet-check`'s sync/reconcile/auto-trade) and the real, read-only DCA
+  sync (`dca-sync`). Bullet auto-trading additionally requires
+  `BINGX_AUTO_TRADE_ENABLED=true` (off by default).
 
 ## Usage
 
 ```bash
-# --- DCA phase ---
-python main.py buy 50            # record a 50 USD DCA purchase at the current price
-python main.py buy 50 60000      # same, with a manual price
+# --- DCA (real money) ---
+python main.py dca-sync          # import real BTC/USDT spot buys from BingX (read-only)
+python main.py buy 50            # manually record a 50 USD DCA purchase instead
 python main.py dca               # DCA summary (no LLM)
 python main.py metrics           # all raw market/cycle metrics (no LLM)
 python main.py bullet 500        # math of a 500 USD x5 bullet at the current price (no state)
 
-# --- Bullet phase: tracking leveraged positions on BingX ---
-# These commands NEVER place or cancel an order. They only record what
-# already happened (manually, or via bingx-sync reading real trades) and
-# compute the P&L from that. Bullets ACCUMULATE (at most one new one per
-# day); the target and close apply to the COMBINED currently-active set.
+# --- Bullets: tracking + auto-trading leveraged positions on BingX Demo ---
+# Bullets ACCUMULATE within a round (at most one new one per day). The
+# +15% target and close apply to the COMBINED currently-active set, and
+# closing ends the round -- the next one starts over with a fresh
+# 30-bullet budget.
 python main.py bullet-open               # auto-size today's new bullet (BingX balance / 30) at the CURRENT price
 python main.py bullet-open 500           # override with an explicit 500 USD instead
 python main.py bullet-open 500 60000 5 15 # same, explicit entry / leverage / target %
 python main.py bullet-status             # live COMBINED P&L of all active bullets (no notification)
-python main.py bullet-check              # same, plus BingX sync (see below) and alerts if combined target hit / near liquidation
+python main.py bullet-check              # runs the FULL 15-min cycle: price tick, auto-trade,
+                                          # bullet sync, reconciliation, DCA sync, account tick,
+                                          # alerts if combined target hit / near liquidation
 python main.py bullet-close tp           # close ALL active bullets at the CURRENT price (outcome tp/manual)
-python main.py bullet-history            # summary of the 30-bullet lifetime cycle
+python main.py bullet-history            # this round's progress (out of 30) + lifetime totals
 
 # --- BingX Demo Trading (VST) ---
 python main.py bingx-positions           # your REAL open positions (merged by BingX, see Design decisions)
 python main.py bingx-balance             # your VST (virtual funds) balance
 python main.py bingx-sync                # reconcile bullets against REAL trade history (also runs inside bullet-check)
+python main.py bingx-reconcile           # independent check: does active bullet state match BingX's real position?
+python main.py bingx-auto-trade          # places a REAL (demo) order if one is due today
+                                          # (also runs inside bullet-check, but ONLY if
+                                          # BINGX_AUTO_TRADE_ENABLED=true)
 
 # --- Agent + tests ---
 python main.py report            # run the full agent and deliver the report
@@ -203,7 +272,7 @@ write their run logs to `logs/launchd_*.out.log` / `.err.log`.
 | Job | Schedule | Runs |
 |---|---|---|
 | `com.cryptoagent.dailyreport` | daily at 08:00 | `python main.py report` (full LLM report, delivered via `NOTIFY_CHANNEL`) |
-| `com.cryptoagent.bulletcheck` | every 15 minutes | `python main.py bullet-check` (no LLM; only notifies on target/liquidation alerts) |
+| `com.cryptoagent.bulletcheck` | every 15 minutes | `python main.py bullet-check` (no LLM; price tick, auto-trade, bullet sync + reconciliation, DCA sync, account tick — only notifies on alerts/mismatches) |
 
 ```bash
 launchctl list | grep cryptoagent                                 # confirm both are loaded
@@ -220,11 +289,28 @@ fine; launchd catches up missed runs on wake) or Ollama isn't running at
 ## Web dashboard
 
 `dashboard/index.html` is a single, build-step-free web page (Supabase JS +
-Chart.js from CDNs) that reads the Supabase data and shows status cards, a
-yesterday-vs-today comparison, time-series charts (price, Fear & Greed,
-Mayer Multiple, distance to the 200-week SMA), the DCA and bullet tables,
-and the latest generated report. It only reads and renders — it never
-places or suggests trades.
+Chart.js from CDNs) that only reads and renders — it never places or
+suggests trades. It shows:
+
+- Status cards: an estimated total ("real DCA value + demo BingX
+  balance", clearly labeled since one leg is virtual money), live BTC
+  price, DCA value/gain (computed from `dca_purchases` directly — not
+  from wherever the BTC physically sits, since it rotates to Nexo for
+  yield between buys), the demo VST balance, and the current round's
+  bullet usage/P&L.
+- A yesterday-vs-today comparison.
+- **Market-cycle charts, independent of how long this agent has been
+  running**: full BTC price history since 2017 (log scale, via Binance's
+  public klines endpoint — CoinGecko's free tier caps history at 365
+  days, not enough for a 200-week moving average), Mayer Multiple and
+  200-week SMA distance computed from that same series, and the Fear &
+  Greed Index since 2018 (via alternative.me). Plus a "very recent"
+  section: 15-min-resolution price and BTC dominance (the latter only as
+  long as this agent has been running — no free historical source for
+  dominance was found).
+- The DCA and bullets tables (bullets show round/bullet number and
+  whether each was opened manually or synced from a real BingX order),
+  and the latest generated report text.
 
 Security: the page uses the **anon** key (safe to expose — it's gated by
 Row Level Security). Run `supabase/security.sql` once to enable RLS +
@@ -244,14 +330,11 @@ Netlify (no build command; output/root directory = `dashboard`).
 
 ## Roadmap
 
-1. **BingX auto-trading** (next): steps 1 (read) and 2 (auto-sync from
-   trade history into bullets, `bingx-sync`) are done and verified
-   against a real demo account. Remaining: let the agent place demo-only
-   practice trades itself, using the same auto-sizing (`balance / 30`)
-   already built for manual `bullet-open`. Still explicitly demo-only,
-   never touching the live account (see `bingx_client.py`'s safety
-   design) — this is a deliberate exception to the "agent never touches
-   the exchange" rule, scoped to practice trades on virtual funds only.
+1. **Live-verify the auto-close path**: `auto_trade()`'s branch that
+   closes a round when the combined +15% target is actually reached in a
+   real, automatic `bullet-check` cycle has only been unit-tested and
+   manually invoked once (an emergency cleanup) — worth watching for
+   naturally or testing deliberately.
 2. **Memory**: compare against previous reports (now stored in
    `daily_snapshots`) to detect regime changes.
 3. **Telegram bidirectional bot**: respond to commands from the chat
@@ -259,6 +342,10 @@ Netlify (no build command; output/root directory = `dashboard`).
    the dashboard.
 4. **Backtesting**: simulate the bullet cycle against historical BingX
    data.
+
+Done: BingX demo auto-trading, DCA auto-sync from real BingX trades,
+round-based bullet accounting, reconciliation hardening, auto-trade
+notifications, the web dashboard (including market-cycle charts).
 
 ## Disclaimer
 

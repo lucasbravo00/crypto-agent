@@ -589,6 +589,62 @@ def sync_with_bingx() -> dict:
     return {"synced": True, "opened": opened, "closed": closed}
 
 
+# Max acceptable gap between what Supabase thinks is open and what BingX
+# actually reports, in BTC, before reconcile_with_bingx() flags a
+# mismatch. Not zero: rounding in how each bullet's implied BTC amount is
+# reconstructed (collateral*leverage/entry_price) can differ from BingX's
+# own stored contract size by a tiny amount even when nothing is wrong.
+RECONCILE_TOLERANCE_BTC = 0.001
+
+
+def reconcile_with_bingx() -> dict:
+    """Defense in depth AFTER sync_with_bingx(): verify that what
+    Supabase/local state believes is currently open actually matches
+    BingX's real open position, instead of trusting a "sync ran without
+    raising" as proof state is correct.
+
+    Why this exists: sync_with_bingx() completing without an exception is
+    NOT the same as it having done the right thing -- confirmed the hard
+    way on 2026-07-24, when a bug silently re-closed bullets that were
+    genuinely still open on BingX, and every sync call kept "succeeding"
+    the whole time. This function catches that class of bug even if a
+    similar one is introduced again: it doesn't trust sync's bookkeeping,
+    it re-derives the expected position size from whatever bullets are
+    currently marked active and compares it against BingX's own reported
+    position, independently.
+
+    Read-only against BingX. Does not fix anything -- callers (see
+    main.py's bullet-check) are expected to notify a human when this
+    reports a mismatch, per this project's human-in-the-loop design.
+
+    Returns:
+        {"checked": bool, "reason": str (if not checked), "ok": bool,
+        "active_amount_btc": float, "real_amount_btc": float,
+        "diff_btc": float}
+    """
+    from . import bingx_client
+
+    if not bingx_client.is_enabled():
+        return {"checked": False, "reason": "BingX not configured"}
+
+    active = _find_active_bullets(state_module.get_bullets())
+    active_amount_btc = sum(
+        b["collateral_usd"] * b["leverage"] / b["entry_price"] for b in active
+    )
+
+    positions = bingx_client.get_open_positions()
+    real_amount_btc = sum(p.get("contracts") or 0 for p in positions)
+
+    diff_btc = abs(active_amount_btc - real_amount_btc)
+    return {
+        "checked": True,
+        "ok": diff_btc <= RECONCILE_TOLERANCE_BTC,
+        "active_amount_btc": round(active_amount_btc, 8),
+        "real_amount_btc": round(real_amount_btc, 8),
+        "diff_btc": round(diff_btc, 8),
+    }
+
+
 def auto_trade(test: bool = False) -> dict:
     """Place REAL orders on your BingX Demo Trading account to keep the
     strategy on schedule, with NO human typing a command:
