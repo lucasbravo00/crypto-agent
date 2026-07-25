@@ -155,14 +155,38 @@ def get_balance(**_ignored) -> dict:
 
 def set_leverage(leverage: float, **_ignored) -> dict:
     """Set the leverage for the LONG side of BTC-USDT on the Demo Trading
-    account. Isolated margin, hedge mode (this account's dualSidePosition
-    is True -- confirmed via fetch_position_mode()), so this only affects
-    the LONG side, not any SHORT position. Called before every automated
-    open so bullets always use the strategy's documented leverage,
-    regardless of whatever the account happens to be set to manually.
+    account. Hedge mode (this account's dualSidePosition is True --
+    confirmed via fetch_position_mode()), so this only affects the LONG
+    side, not any SHORT position. Called before every automated open so
+    bullets always use the strategy's documented leverage, regardless of
+    whatever the account happens to be set to manually.
     """
     client = _get_client()
     return client.set_leverage(int(leverage), SYMBOL, params={"side": "LONG"})
+
+
+def set_margin_mode_cross(**_ignored) -> dict:
+    """Force CROSS margin for BTC-USDT on the Demo Trading account.
+
+    Why cross, not isolated: the strategy's 30-bullet-per-round cap is
+    meant to be a RESERVE, not a target -- the intent is to rarely, if
+    ever, actually reach bullet 30. With ISOLATED margin, each bullet's
+    own collateral is its own liquidation wall (~20% adverse move at 5x
+    wipes IT alone, regardless of how much of the 30-bullet budget is
+    unused). CROSS margin pools the whole account's collateral behind
+    every open bullet together, so unused budget acts as real headroom:
+    a drawdown deeper than 20% can be absorbed by adding bullets at
+    better prices instead of being liquidated bullet-by-bullet. Switched
+    2026-07-25 at the user's explicit request, after round 2 lost $1,037
+    to exactly this isolated-margin failure mode.
+
+    BingX (like most exchanges) refuses this call while a position is
+    open on the symbol -- call it only when flat. Called before every
+    automated open (like set_leverage()) so a manually-reset account
+    mode never silently reverts a round back to isolated.
+    """
+    client = _get_client()
+    return client.set_margin_mode("cross", SYMBOL)
 
 
 def open_long_position(collateral_usd: float, leverage: float = 5.0, test: bool = False, **_ignored) -> dict:
@@ -183,6 +207,13 @@ def open_long_position(collateral_usd: float, leverage: float = 5.0, test: bool 
     """
     client = _get_client()
     set_leverage(leverage)
+    # BingX refuses to change margin mode while a position is open, so
+    # only attempt it when flat (a new round's first bullet) -- that's
+    # also the only moment it can actually take effect. Adding to an
+    # already-open round's position (bullet 2, 3, ...) skips this and
+    # relies on the mode already being cross from that round's opener.
+    if not get_open_positions():
+        set_margin_mode_cross()
     price = client.fetch_ticker(SYMBOL)["last"]
     notional_usd = collateral_usd * leverage
     amount = notional_usd / price

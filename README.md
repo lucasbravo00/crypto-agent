@@ -113,6 +113,24 @@ supabase/migration_*.sql   -> incremental migrations, run in order if your proje
   before the split existed, would have let `update_bullet()` silently
   corrupt a closed bullet from an earlier round that happened to share a
   `bullet_number` with a currently-active one.
+- **CROSS margin, not isolated**: the 30-bullet-per-round budget is meant
+  to be a reserve, rarely if ever actually reached — with ISOLATED
+  margin that reserve was pointless, since each bullet's own collateral
+  is its own liquidation wall regardless of how much unused budget
+  exists (a ~20% adverse move at 5x wipes a bullet out on its own).
+  Switched to CROSS (2026-07-25, after round 2 lost $1,037 to exactly
+  this): now the whole account's collateral backs every open bullet
+  together, so unused budget is real headroom — a drawdown deeper than
+  20% can be absorbed by adding bullets at better prices instead of
+  being liquidated bullet-by-bullet. `bingx_client.open_long_position()`
+  forces cross mode before a round's first bullet (the only moment
+  BingX allows changing it — it refuses mid-round, while flat with
+  contracts open). Known follow-up, not yet done:
+  `strategy_tools.simulate_bullet_math()`'s `approx_liquidation_price`
+  still assumes isolated math per bullet; under cross margin the real
+  liquidation point is a function of the whole round's combined
+  position vs. total account equity, not any single bullet in
+  isolation — that display is now illustrative, not literal.
 - **Sync from trade history, not positions**: BingX MERGES same-symbol,
   same-side positions into one row with an averaged entry price (opening
   a position and later adding to it keeps the same `positionId`).
