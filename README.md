@@ -429,6 +429,61 @@ previous tops, and the February 2025 liquidation happened with Mayer at
 detector; it worked here mostly by trimming exposure steadily, not by
 calling the top.
 
+### Reactive de-risking (`drawdown`) and why top-detection was abandoned
+
+Measured against BTC's *real* cycle tops, every price-derived top
+detector tried here failed:
+
+| Real top | Price | Mayer | Mayer percentile | Weekly RSI |
+|---|---|---|---|---|
+| 2021-11-10 | $64,882 | 1.42 | 74% | 71 |
+| 2025-10-06 | $124,659 | **1.18** | **49%** | **61** |
+
+At the actual 2025 top the Mayer Multiple sat at the 49th percentile of
+its own trailing two-year distribution — the median. Pi Cycle Top fired
+once (2021-04-12, near a *local* top) and never again, including not at
+either real top. A self-calibrating percentile rank fires ~320-355 days
+early, at $18.6k and $94.3k respectively — you would de-risk through the
+entire best part of the run. These indicators degraded as BTC matured
+and its volatility compressed; thresholds calibrated on 2013-2017 no
+longer get reached.
+
+So `drawdown` mode does not try to predict anything: it simply stops
+opening new bullets while price sits more than X% below its trailing
+N-day high, and resumes when it recovers. Under cross margin this really
+does cut liquidation risk, because the liquidation price rises with
+every bullet added — freezing exposure freezes it too.
+
+**Parameter sweep, both cycles, starting from 1.0 BTC:**
+
+| Config | 2020-21 | 2023-25 | survived both |
+|---|---|---|---|
+| 30d / -5% | 2.103 | 6.638 | **yes** |
+| 90d / -5% | 1.837 | 4.185 | **yes** |
+| 180d / -5% | 1.605 | 3.363 | **yes** |
+| 60d / -10% | 0.000 | 13.098 | no |
+| 90d / -10% | 0.000 | 11.179 | no |
+| 60d / -20% | 4.367 | 0.000 | no |
+| *(10 other combos)* | | | no |
+
+**Read this table carefully, because the headline numbers are a trap.**
+The best single result (13.098 BTC, 60d/-10%) is a total wipeout in the
+other cycle. So is 60d/-20%, the 2020-21 winner. Only 3 of 16
+combinations survived both cycles, and all three are the *tightest*
+brake (-5%) — the threshold matters far more than the lookback. Picking
+a config by peak return is curve-fitting to one crash.
+
+Two caveats that keep this honest: there are exactly **two** liquidation
+events in the whole sample (n=2), which is nowhere near enough to
+separate skill from luck; and whether a brake saves a given round comes
+down to whether it happened to be engaged on the specific day of a
+specific crash. Treat "-5% is robust" as a weak prior, not a result.
+
+A lookahead-bias bug was found and fixed while building this (the
+trailing high originally included the current day's high, which is not
+knowable at the daily open when the decision is made). The table above
+is post-fix.
+
 Documented simplifications (see `src/backtest.py`): liquidation is
 modeled as round equity hitting zero, which is *optimistic* — real
 exchanges liquidate earlier by holding maintenance margin. When a single

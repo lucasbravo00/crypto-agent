@@ -71,7 +71,19 @@ MAYER_STOP = 2.4
 # with it. The only thing that actually protects gains is moving BTC OUT
 # of the trading account ("withdraw"), where a liquidation can't reach
 # it. Confirmed empirically: see the README's backtest section.
-DERISK_MODES = ("off", "bullet_size", "withdraw")
+# "drawdown" is REACTIVE rather than predictive: it makes no attempt to
+# call the top, it just stops opening new bullets once price has fallen
+# DRAWDOWN_STOP_PCT below its trailing DRAWDOWN_LOOKBACK_DAYS high, and
+# resumes when price recovers. Rationale: measured against the real cycle
+# tops, every price-derived "top detector" tried here failed badly --
+# at BTC's actual 2025-10-06 top the Mayer Multiple sat at 1.18, the 49th
+# percentile of its own trailing distribution, and weekly RSI at 61.
+# Under cross margin this genuinely lowers liquidation risk (unlike
+# shrinking bullet size): not adding bullets keeps total exposure flat,
+# and the liquidation price rises with every bullet added.
+DERISK_MODES = ("off", "bullet_size", "withdraw", "drawdown")
+DRAWDOWN_LOOKBACK_DAYS = 90
+DRAWDOWN_STOP_PCT = 10.0
 
 SMA_WARMUP_DAYS = 200  # the Mayer Multiple's denominator
 
@@ -172,6 +184,8 @@ def run_backtest(
     max_bullets_per_round: int = MAX_BULLETS_PER_ROUND,
     target_mode: str = "btc",
     derisk_mode: str = "withdraw",
+    drawdown_lookback_days: int = DRAWDOWN_LOOKBACK_DAYS,
+    drawdown_stop_pct: float = DRAWDOWN_STOP_PCT,
     candles: list | None = None,
     warmup_candles: list | None = None,
 ) -> dict:
@@ -238,6 +252,19 @@ def run_backtest(
         for i in range(len(candles))
     ]
 
+    # Trailing high per simulated day, for derisk_mode="drawdown". Built
+    # over warmup+simulated highs so day one already has a real lookback.
+    #
+    # Deliberately EXCLUDES the current day: the decision to open happens
+    # at the daily open, when that day's high is still unknown. Including
+    # it would be lookahead bias and would flatter the results.
+    all_highs = [c[2] for c in warmup_candles] + [c[2] for c in candles]
+    trailing_high: list[float | None] = []
+    for i in range(len(candles)):
+        end = offset + i  # up to yesterday, inclusive
+        window = all_highs[max(0, end - drawdown_lookback_days):end]
+        trailing_high.append(max(window) if window else None)
+
     pick_target = _target_price_btc if target_mode == "btc" else _target_price_usd
 
     balance = initial_balance_btc
@@ -301,9 +328,20 @@ def run_backtest(
         # its bullet-check right after midnight UTC) ---
         size_factor = factor if derisk_mode == "bullet_size" else 1.0
         bullet_size = (round_start_balance / max_bullets_per_round) * size_factor
+
+        # Reactive brake: price is well off its recent high, so stop
+        # adding exposure until it recovers. Purely mechanical -- no
+        # attempt to judge whether this is "the top".
+        in_drawdown = (
+            derisk_mode == "drawdown"
+            and trailing_high[i] is not None
+            and open_price < trailing_high[i] * (1 - drawdown_stop_pct / 100)
+        )
+
         can_open = (
             balance > 0
             and bullet_size > 0
+            and not in_drawdown
             and date != last_open_date
             and len(open_bullets) < max_bullets_per_round
         )
@@ -367,6 +405,8 @@ def run_backtest(
         "target_gain_pct": target_gain_pct,
         "target_mode": target_mode,
         "derisk_mode": derisk_mode,
+        "drawdown_lookback_days": drawdown_lookback_days,
+        "drawdown_stop_pct": drawdown_stop_pct,
         "max_bullets_per_round": max_bullets_per_round,
         "initial_balance_btc": round(initial_balance_btc, 8),
         "trading_balance_btc": round(final_balance, 8),

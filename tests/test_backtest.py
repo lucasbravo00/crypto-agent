@@ -248,6 +248,68 @@ def test_withdraw_protects_profit_from_a_liquidation_but_bullet_size_does_not():
     assert withdrawn["final_balance_btc"] > 0.4
 
 
+def _bullets_opened(result):
+    return sum(r["bullets_used"] for r in result["rounds"])
+
+
+# An unreachable target keeps take-profits from ending rounds mid-test,
+# so these assertions isolate the brake's behavior and nothing else.
+NO_TP = 10_000.0
+
+
+def test_derisk_drawdown_stops_opening_while_price_is_off_its_high():
+    # Day 0 sets a high of 200; days 1-9 sit at 150, i.e. -25% below it.
+    # With a -10% brake, only day 0 may open a bullet.
+    candles = [_candle(0, 100.0, 200.0, 100.0, 200.0)]
+    candles += [_candle(i, 150.0, 150.0, 150.0, 150.0) for i in range(1, 10)]
+    result = backtest.run_backtest(
+        "2023-01-01", "2023-01-10", initial_balance_btc=1.0, candles=candles,
+        derisk_mode="drawdown", drawdown_lookback_days=30, drawdown_stop_pct=10.0,
+        target_gain_pct=NO_TP,
+    )
+    assert _bullets_opened(result) == 1
+
+
+def test_derisk_drawdown_resumes_once_price_recovers():
+    # Same dip, then a recovery to 199 (only -0.5% off the high) -> the
+    # brake releases and bullets start opening again.
+    candles = [_candle(0, 100.0, 200.0, 100.0, 200.0)]
+    candles += [_candle(i, 150.0, 150.0, 150.0, 150.0) for i in range(1, 5)]
+    candles += [_candle(i, 199.0, 199.0, 199.0, 199.0) for i in range(5, 10)]
+    result = backtest.run_backtest(
+        "2023-01-01", "2023-01-10", initial_balance_btc=1.0, candles=candles,
+        derisk_mode="drawdown", drawdown_lookback_days=30, drawdown_stop_pct=10.0,
+        target_gain_pct=NO_TP,
+    )
+    assert _bullets_opened(result) == 6  # day 0, plus days 5-9
+
+
+def test_derisk_drawdown_does_not_peek_at_todays_high():
+    # Day 0's own high (200) must NOT gate day 0's own open (100): at the
+    # daily open that high hasn't happened yet. Guarding against lookahead
+    # bias, which would otherwise flatter every drawdown result.
+    candles = [_candle(0, 100.0, 200.0, 100.0, 200.0)]
+    result = backtest.run_backtest(
+        "2023-01-01", "2023-01-01", initial_balance_btc=1.0, candles=candles,
+        derisk_mode="drawdown", drawdown_lookback_days=30, drawdown_stop_pct=10.0,
+        target_gain_pct=NO_TP,
+    )
+    assert _bullets_opened(result) == 1
+
+
+def test_derisk_drawdown_is_a_no_op_in_a_market_that_never_dips():
+    candles = _flat_candles(10, 100.0)
+    braked = backtest.run_backtest(
+        "2023-01-01", "2023-01-10", initial_balance_btc=1.0, candles=candles,
+        derisk_mode="drawdown", drawdown_stop_pct=10.0,
+    )
+    plain = backtest.run_backtest(
+        "2023-01-01", "2023-01-10", initial_balance_btc=1.0, candles=candles,
+        derisk_mode="off",
+    )
+    assert braked["rounds"][0]["bullets_used"] == plain["rounds"][0]["bullets_used"]
+
+
 def test_invalid_derisk_mode_raises():
     with pytest.raises(ValueError):
         backtest.run_backtest("2023-01-01", "2023-01-10",
