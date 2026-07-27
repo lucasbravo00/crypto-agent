@@ -491,22 +491,57 @@ day's range spans both the liquidation price and the target, liquidation
 is assumed to have happened first. Funding rates are not modeled; the
 real 0.05% taker fee is.
 
+## Division of labour: what the bot decides, and what it must not
+
+An explicit design boundary, decided 2026-07-27, not an open question:
+
+**The bot owns the mechanical part.** Opening one bullet per calendar
+day, sized at `balance / 30`, at 5x, in cross margin — and closing the
+round when the combined target is reached. That is a rule, not a
+judgment call, so it is safe to automate.
+
+**The human owns the strategy's arc.** When to scale down, when to stop
+opening, when a cycle is running out of room, when to walk away. Those
+depend on reading momentum and market context, and they stay manual —
+informed by the daily report and the dashboard, decided by the user.
+
+Concretely, this means the de-risking work in `src/backtest.py`
+(`derisk_mode`: Mayer-based sizing, withdrawals, drawdown brake) is
+**backtesting-only, on purpose**. It exists to understand how the
+strategy behaves and what protects it, not to be wired into the live
+bot. Verified rather than assumed:
+
+- `backtest.py` is imported in exactly two places: `main.py`'s
+  `cmd_backtest` (the manual CLI command) and its own test file. No live
+  code path reaches it.
+- `MAYER_FULL_SIZE`, `MAYER_STOP`, `DRAWDOWN_*`, `_size_factor()` and
+  `derisk_mode` appear nowhere in `bullets.py`, `bingx_client.py`, or the
+  `bullet-check` flow.
+- `backtest.py` imports neither `state` nor `db` and never calls
+  `create_order`, so it cannot write state or touch an exchange even by
+  accident.
+
+If automated de-risking is ever wanted, it must be a deliberate,
+separately-requested feature — never something that quietly grows out of
+the backtester. The same rule that governs demo-vs-live trading.
+
 ## Roadmap
 
-1. **Act on the backtest findings**: the simulation says the live setup
-   (no de-risking) ends at -100% eventually, and that only withdrawing
-   BTC out of the trading account protects gains. Nothing in the live
-   code implements that yet — it is currently backtest-only.
-2. **Live-verify the auto-close path**: `auto_trade()`'s branch that
+1. **Live-verify the auto-close path**: `auto_trade()`'s branch that
    closes a round when the combined +15% target is actually reached in a
    real, automatic `bullet-check` cycle has only been unit-tested and
    manually invoked once (an emergency cleanup) — worth watching for
    naturally or testing deliberately.
-3. **Cross-margin liquidation display**: `strategy_tools.simulate_bullet_math()`
+2. **Cross-margin liquidation display**: `strategy_tools.simulate_bullet_math()`
    still reports a per-bullet `approx_liquidation_price` using isolated,
    USDT-margined math. Under cross margin with BTC collateral the real
    liquidation point is a function of the whole round vs. account equity
    (the backtest already models this correctly; the live display does not).
+3. **Surface backtest context in the daily report**: the human makes the
+   de-risking calls, so the report is where that judgment gets informed —
+   e.g. showing how deep the current round is into its 30-bullet budget
+   and how far price sits below its recent highs. Data for a decision,
+   never the decision itself.
 4. **Telegram bidirectional bot**: respond to commands from the chat
    (e.g. `/bullet-open`) talking directly to Supabase, same pattern as
    the dashboard.
