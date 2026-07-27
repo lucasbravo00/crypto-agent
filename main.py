@@ -13,6 +13,14 @@ Entry point. Available commands:
     python main.py bullet 500          -> math of a 500 USD x5 bullet at the current price
     python main.py bullet 500 60000 3  -> same with entry price 60000 and x3 leverage
 
+    --- Backtesting (offline; touches no account, no state) ---
+    python main.py backtest 2023-01-01 2025-07-24        -> simulate the bullet strategy over
+                                                            that date range with a 10k balance
+    python main.py backtest 2023-01-01 2025-07-24 50000  -> same, starting from 50k
+    NOTE: pick a BULL-market range yourself. This strategy is long-only and
+    was never meant to run through a bear market -- judging when a bull
+    market is underway is the trader's call, not the code's.
+
     --- Phase 2: tracking manual leveraged bullets on BingX ---
     Bullets ACCUMULATE: at most one NEW bullet per calendar day, but
     previous ones stay open. The +15% target is evaluated on the
@@ -410,6 +418,40 @@ def cmd_bingx_reconcile():
         sys.exit(1)
 
 
+def cmd_backtest(args: list[str]):
+    if len(args) < 2:
+        print("Usage: python main.py backtest START_DATE END_DATE [INITIAL_BALANCE_USD]")
+        print("  e.g. python main.py backtest 2023-01-01 2025-07-24 10000")
+        print("\nPick a BULL-market range yourself: this strategy is long-only and")
+        print("was never meant to run through a bear market (see src/backtest.py).")
+        sys.exit(1)
+    from src import backtest
+    start_date, end_date = args[0], args[1]
+    initial_balance = float(args[2]) if len(args) >= 3 else 10000.0
+
+    print(f"Fetching daily candles {start_date}..{end_date} from Binance...")
+    result = backtest.run_backtest(start_date, end_date, initial_balance_usd=initial_balance)
+
+    print(f"\n=== Backtest {result['start_date']} -> {result['end_date']} "
+          f"({result['days_simulated']} days) ===")
+    print(f"Initial balance : ${result['initial_balance_usd']:,.2f}")
+    print(f"Final balance   : ${result['final_balance_usd']:,.2f}")
+    print(f"Total return    : {result['total_return_pct']:+.2f}%")
+    print(f"Max drawdown    : -{result['max_drawdown_pct']:.2f}%")
+    print(f"Rounds          : {result['rounds_total']} total — "
+          f"{result['rounds_take_profit']} take-profit, "
+          f"{result['rounds_liquidated']} liquidated"
+          + (", 1 still open at the end" if result["round_still_open"] else ""))
+
+    print("\nPer round:")
+    for r in result["rounds"]:
+        closed = r["closed_at"] or "(still open)"
+        print(f"  #{r['round_number']:<3} {r['outcome']:<12} {r['opened_at']} -> {closed:<12} "
+              f"{r['bullets_used']:>2} bullets  "
+              f"${r['start_balance_usd']:>12,.2f} -> ${r['end_balance_usd']:>12,.2f}  "
+              f"({r['pnl_usd']:+,.2f})")
+
+
 def cmd_bingx_auto_trade(args: list[str]):
     from src import bullets
     test = "--test" in args
@@ -456,6 +498,8 @@ if __name__ == "__main__":
         cmd_bingx_sync()
     elif cmd == "bingx-reconcile":
         cmd_bingx_reconcile()
+    elif cmd == "backtest":
+        cmd_backtest(rest)
     elif cmd == "bingx-auto-trade":
         cmd_bingx_auto_trade(rest)
     else:

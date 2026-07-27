@@ -346,6 +346,50 @@ python3 -m http.server 4173 --directory dashboard   # then open http://localhost
 Deploy (free): host the `dashboard/` folder as a static site on Vercel or
 Netlify (no build command; output/root directory = `dashboard`).
 
+## Backtesting
+
+`python main.py backtest START_DATE END_DATE [INITIAL_BALANCE]` replays
+the round-based bullet mechanics against real historical daily candles
+(from Binance — BingX's public API only reaches back to late 2023, not
+far enough for the 2020-2021 cycle). It touches no account and no state.
+
+The date range is a required, deliberate input: this strategy is
+long-only and was never meant to run through a bear market. Judging when
+a bull market is underway is the trader's call, not the code's — the
+same reason the live agent never emits buy/sell signals.
+
+**What the first runs showed (2026-07-26).** Across both bull cycles the
+mechanics compound impressively and then lose everything to a single
+event:
+
+| Range | Rounds won | Result |
+|---|---|---|
+| 2020-10-01 → 2021-11-08 | 66 straight | $10k → $28.4k, then **liquidated** (2021-06-08, the May-2021 crash) |
+| 2023-01-01 → 2025-07-24 | 88 straight | $10k → $191k, then **liquidated** (2025-02-28) |
+| 2023 only | 41 straight | $10k → $32k (+220%), round still open at year end |
+| 2024 only | 43 straight | $10k → $41.6k (+316%), round still open at year end |
+
+The failure mode is the same both times, and it is NOT the bear market
+the strategy is designed to sit out: once all 30 bullets are deployed,
+the round's total collateral equals the account balance, so the whole
+account is effectively at 5x — and a ~20% drop below the round's
+*weighted average entry* liquidates everything. Verified against the raw
+candles rather than trusted from the summary: the 2025 round opened
+2025-01-22 at ~$106k, averaged ~$99.5k across 30 bullets, and BTC's
+2025-02-28 low of $78,258 is almost exactly 20% below that. Both wipeouts
+happened *inside* bull markets, during ordinary corrections.
+
+Note also the max drawdown even in the winning years (-71% in 2024, -76%
+in 2023): that is unrealized drawdown *within* rounds, i.e. what the
+account looks like mid-round before a target is reached.
+
+Documented simplifications (see `src/backtest.py`): liquidation is
+modeled as round equity hitting zero, which is *optimistic* — real
+exchanges liquidate earlier by holding maintenance margin. When a single
+day's range spans both the liquidation price and the target, liquidation
+is assumed to have happened first. Funding rates are not modeled; the
+real 0.05% taker fee is.
+
 ## Roadmap
 
 1. **Live-verify the auto-close path**: `auto_trade()`'s branch that
