@@ -93,11 +93,16 @@ def insert_dca_purchase(
     asset: str = "BTC",
     bingx_trade_id: Optional[str] = None,
     purchased_at: Optional[str] = None,
+    fee_usd: Optional[float] = None,
 ) -> dict:
     """Record a DCA purchase. `bingx_trade_id` / `purchased_at` are set
     when this purchase was auto-imported from a real BingX spot fill (see
     src/dca.py's sync_with_bingx()) -- bingx_trade_id is the dedupe key
-    that keeps repeated syncs from double-importing the same trade."""
+    that keeps repeated syncs from double-importing the same trade.
+    `fee_usd` is informational (the real fee's USD-equivalent value) --
+    `price` has ALREADY been adjusted to fold the fee into the effective
+    cost basis (see dca.py's _fee_adjusted()), so this field is for
+    display/audit only, not added again anywhere."""
     purchased_at = purchased_at or datetime.now(timezone.utc).isoformat()
     if db.is_enabled():
         client = db.get_client()
@@ -107,6 +112,7 @@ def insert_dca_purchase(
             "price": price,
             "asset": asset,
             "bingx_trade_id": bingx_trade_id,
+            "fee_usd": fee_usd,
         }
         result = client.table("dca_purchases").insert(row).execute().data[0]
         result.setdefault("date", result.get("purchased_at", purchased_at))
@@ -118,6 +124,7 @@ def insert_dca_purchase(
         "price": price,
         "asset": asset,
         "bingx_trade_id": bingx_trade_id,
+        "fee_usd": fee_usd,
     }
     state["dca_purchases"].append(purchase)
     save_state(state)

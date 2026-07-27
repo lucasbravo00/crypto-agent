@@ -41,7 +41,8 @@ def isolated_state(tmp_path, monkeypatch):
 
 
 def _insert_bullet(collateral_usd, entry_price, leverage=5.0, target_position_gain_pct=15.0,
-                    opened_at=None, status="open", round_number=None, bullet_number=None):
+                    opened_at=None, status="open", round_number=None, bullet_number=None,
+                    entry_fee_usd=None):
     """Insert a bullet directly via state.py, bypassing open_bullet()'s
     guardrails (one-NEW-bullet-per-day, round cap). Used to set up
     multi-bullet test scenarios deterministically, regardless of what
@@ -74,6 +75,8 @@ def _insert_bullet(collateral_usd, entry_price, leverage=5.0, target_position_ga
         "outcome": None,
         "realized_pnl_usd": None,
         "notes": None,
+        "entry_fee_usd": entry_fee_usd,
+        "exit_fee_usd": None,
     }
     return state_module.insert_bullet(fields, bullet_number)
 
@@ -554,3 +557,70 @@ def test_reconcile_ok_when_nothing_active_and_nothing_open(monkeypatch):
     assert result["ok"] is True
     assert result["active_amount_btc"] == 0
     assert result["real_amount_btc"] == 0
+
+
+# --- Exchange fees ------------------------------------------------------
+# Real fees, read from BingX's own trade record, subtracted from P&L
+# instead of pretending trading is fee-free.
+
+def test_check_bullets_subtracts_entry_fee_from_unrealized_pnl():
+    _insert_bullet(500, 60000, leverage=5, opened_at=YESTERDAY, entry_fee_usd=2.5)
+    # Price unchanged -> 0 raw gain, so unrealized P&L should be exactly -2.5
+    result = bullets.check_bullets(60000)
+    assert result["bullets"][0]["unrealized_pnl_usd"] == -2.5
+
+
+def test_check_bullets_treats_missing_entry_fee_as_zero():
+    _insert_bullet(500, 60000, leverage=5, opened_at=YESTERDAY)  # entry_fee_usd=None
+    result = bullets.check_bullets(60000)
+    assert result["bullets"][0]["unrealized_pnl_usd"] == 0.0
+
+
+def test_close_all_active_bullets_subtracts_entry_and_exit_fees():
+    _insert_bullet(500, 60000, leverage=5, opened_at=YESTERDAY, entry_fee_usd=2.0)
+    # Price unchanged -> 0 raw gain. exit_fee_usd_total=10 goes entirely
+    # to this one bullet (it's the only one active).
+    closed = bullets.close_all_active_bullets("manual", 60000, exit_fee_usd_total=10.0)
+    assert closed[0]["realized_pnl_usd"] == -12.0
+    assert closed[0]["exit_fee_usd"] == 10.0
+
+
+def test_close_all_active_bullets_splits_exit_fee_by_collateral_weight():
+    # Bullet A: 300 collateral (25% of the 1200 total) -> 25% of the exit fee.
+    # Bullet B: 900 collateral (75%) -> 75% of the exit fee.
+    b1 = _insert_bullet(300, 60000, leverage=5, opened_at=YESTERDAY)
+    b2 = bullets.open_bullet(collateral_usd=900, entry_price=60000, leverage=5)
+    closed = bullets.close_all_active_bullets("manual", 60000, exit_fee_usd_total=20.0)
+    by_id = {c["id"]: c for c in closed}
+    assert by_id[b1["id"]]["exit_fee_usd"] == 5.0
+    assert by_id[b2["id"]]["exit_fee_usd"] == 15.0
+
+
+def test_sync_with_bingx_reads_entry_fee_from_buy_trade(monkeypatch):
+    from src import bingx_client
+    monkeypatch.setattr(bingx_client, "is_enabled", lambda: True)
+    monkeypatch.setattr(bingx_client, "get_open_positions", lambda **kw: [])
+    monkeypatch.setattr(bingx_client, "get_trade_history", lambda **kw: [
+        {"order": "o1", "side": "buy", "price": 60000, "cost": 500,
+         "datetime": "2026-07-20T10:00:00Z", "fee": {"currency": "USDT", "cost": 0.25}},
+    ])
+    bullets.sync_with_bingx()
+    active = bullets.get_active_bullets()
+    assert active[0]["entry_fee_usd"] == 0.25
+
+
+def test_sync_with_bingx_reads_exit_fee_from_sell_trade(monkeypatch):
+    from src import bingx_client
+    monkeypatch.setattr(bingx_client, "is_enabled", lambda: True)
+    monkeypatch.setattr(bingx_client, "get_open_positions", lambda **kw: [{"leverage": 5.0}])
+    monkeypatch.setattr(bingx_client, "get_trade_history", lambda **kw: [
+        {"order": "o1", "side": "buy", "price": 60000, "cost": 500,
+         "datetime": "2026-07-20T10:00:00Z", "fee": {"currency": "USDT", "cost": 0.25}},
+        {"order": "o2", "side": "sell", "price": 60000, "cost": 500,
+         "datetime": "2026-07-20T11:00:00Z", "fee": {"currency": "USDT", "cost": 0.25}},
+    ])
+    result = bullets.sync_with_bingx()
+    closed = result["closed"][0]
+    assert closed["exit_fee_usd"] == 0.25
+    # 0 raw gain (same price) - 0.25 entry - 0.25 exit
+    assert closed["realized_pnl_usd"] == -0.5

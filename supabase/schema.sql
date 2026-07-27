@@ -19,7 +19,12 @@ create table if not exists dca_purchases (
     -- src/dca.py's sync_with_bingx() instead of typed in by hand via
     -- `main.py buy`. NULL for manually-recorded purchases. Unique so
     -- syncing twice never double-imports the same real trade.
-    bingx_trade_id text unique
+    bingx_trade_id text unique,
+    -- Informational only: the real fee's USD-equivalent value. `price`
+    -- above has ALREADY been adjusted to fold the fee into the cost
+    -- basis (see dca.py's _fee_adjusted()) -- this column is for
+    -- display/audit, never added again anywhere.
+    fee_usd numeric
 );
 
 create table if not exists bullets (
@@ -51,7 +56,15 @@ create table if not exists bullets (
     -- without persisting it, that same historical sell fill gets
     -- replayed on every later sync and wrongly re-closes whatever
     -- bullets happen to be active at that later point (fixed 2026-07-24).
-    bingx_close_order_id text
+    bingx_close_order_id text,
+    -- REAL exchange fees, read from BingX's own trade record by
+    -- sync_with_bingx() and subtracted from P&L. entry_fee_usd is this
+    -- bullet's own opening fee; exit_fee_usd is its share of the whole
+    -- round's single closing fee, split by collateral weight (see
+    -- close_all_active_bullets()). Both NULL for manually-recorded
+    -- bullets -- there's no real fill to read a fee from.
+    entry_fee_usd numeric,
+    exit_fee_usd numeric
 );
 
 -- NOTE: there is deliberately NO uniqueness constraint limiting how many

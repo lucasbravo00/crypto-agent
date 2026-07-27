@@ -159,12 +159,19 @@ def _build_bullet_fields(
     round_number: int,
     opened_at: str | None = None,
     bingx_order_id: str | None = None,
+    entry_fee_usd: float | None = None,
 ) -> dict:
     """Shared field-construction logic for a freshly-opened bullet, used
     by both open_bullet() (manual, guardrail-checked) and
     sync_with_bingx() (reconciled from real BingX trades, guardrail-free
     since it's recording what already happened, not requesting a new
-    action)."""
+    action).
+
+    entry_fee_usd: the REAL exchange fee paid on the opening fill (read
+    from BingX's own trade record by sync_with_bingx() -- see its
+    docstring). None for manually-recorded bullets, where there's no
+    real fill to read a fee from; treated as 0 by check_bullets() /
+    close_all_active_bullets()."""
     math = simulate_bullet_math(
         collateral_usd=collateral_usd,
         entry_price=entry_price,
@@ -188,6 +195,8 @@ def _build_bullet_fields(
         "realized_pnl_usd": None,
         "notes": None,
         "bingx_order_id": bingx_order_id,
+        "entry_fee_usd": entry_fee_usd,
+        "exit_fee_usd": None,
     }
 
 
@@ -308,7 +317,12 @@ def check_bullets(current_price: float) -> dict:
 
         price_move_pct = (current_price - entry_price) / entry_price * 100
         position_gain_pct = price_move_pct * leverage
-        unrealized_pnl_usd = bullet["collateral_usd"] * position_gain_pct / 100
+        entry_fee_usd = bullet.get("entry_fee_usd") or 0
+        # Only the entry fee is subtracted here: it's already been paid
+        # for real. The exit fee isn't known until the position actually
+        # closes (see close_all_active_bullets()), so unrealized P&L
+        # can't account for it yet -- it's a real cost still to come.
+        unrealized_pnl_usd = bullet["collateral_usd"] * position_gain_pct / 100 - entry_fee_usd
 
         pct_above_liquidation = (current_price - liq_price) / liq_price * 100
         near_liquidation = current_price <= liq_price * (1 + LIQUIDATION_PROXIMITY_PCT / 100)
@@ -353,11 +367,13 @@ def close_all_active_bullets(
     notes: str | None = None,
     closed_at: str | None = None,
     bingx_close_order_id: str | None = None,
+    exit_fee_usd_total: float = 0.0,
 ) -> list[dict]:
     """Record the close of EVERY currently active bullet together, in one
     action (does NOT touch the exchange) -- this ends the round. Each
     bullet's realized P&L is computed from its OWN entry price vs. this
-    shared closing price.
+    shared closing price, minus its own entry fee (if known) and its
+    share of the round's exit fee.
 
     Args:
         outcome: Either "tp" (the combined round hit its +15% target) or
@@ -373,6 +389,13 @@ def close_all_active_bullets(
             later sync -- see sync_with_bingx()'s module note on why this
             matters (a replayed old sell fill was wrongly re-closing
             bullets opened AFTER it, confirmed 2026-07-24).
+        exit_fee_usd_total: The REAL exchange fee BingX charged on the
+            closing fill (read from the trade record by
+            sync_with_bingx()) -- ALL active bullets close via a single
+            fill, so this one fee is split across them by collateral
+            share (a bullet with 2x the collateral of another absorbs 2x
+            the exit fee). 0 for a manual close with no real fill to
+            read a fee from.
 
     Returns:
         The list of updated (now terminal) bullet records.
@@ -394,13 +417,22 @@ def close_all_active_bullets(
 
     closed_at = closed_at or _now_iso()
     status = "closed_tp" if outcome == "tp" else "closed_manual"
+    total_collateral = sum(b["collateral_usd"] for b in active)
     closed = []
     for bullet in active:
         entry_price = bullet["entry_price"]
         leverage = bullet["leverage"]
         price_move_pct = (closing_price - entry_price) / entry_price * 100
         position_gain_pct = price_move_pct * leverage
-        realized_pnl_usd = bullet["collateral_usd"] * position_gain_pct / 100
+        entry_fee_usd = bullet.get("entry_fee_usd") or 0
+        exit_fee_share = (
+            exit_fee_usd_total * (bullet["collateral_usd"] / total_collateral)
+            if total_collateral else 0.0
+        )
+        realized_pnl_usd = (
+            bullet["collateral_usd"] * position_gain_pct / 100
+            - entry_fee_usd - exit_fee_share
+        )
 
         closed.append(state_module.update_bullet(bullet["id"], {
             "status": status,
@@ -408,6 +440,7 @@ def close_all_active_bullets(
             "closing_price": closing_price,
             "closed_at": closed_at,
             "realized_pnl_usd": round(realized_pnl_usd, 2),
+            "exit_fee_usd": round(exit_fee_share, 2),
             "notes": notes,
             "bingx_close_order_id": bingx_close_order_id,
         }))
@@ -564,6 +597,11 @@ def sync_with_bingx() -> dict:
         price = trade.get("price")
         cost = trade.get("cost")
         trade_time = trade.get("datetime")
+        # Futures fees on BingX are charged in the settlement currency
+        # (USDT, even on the demo/VST account) -- straightforward to read
+        # directly as a USD amount, unlike DCA's BTC-denominated spot
+        # fees (see dca.py). Confirmed empirically 2026-07-25.
+        fee_usd = (trade.get("fee") or {}).get("cost") or 0
 
         if side == "buy" and price and cost:
             all_bullets = state_module.get_bullets()
@@ -572,7 +610,7 @@ def sync_with_bingx() -> dict:
             collateral_usd = cost / fallback_leverage
             fields = _build_bullet_fields(
                 collateral_usd, price, fallback_leverage, DEFAULT_TARGET_GAIN_PCT, round_number,
-                opened_at=trade_time, bingx_order_id=order_id,
+                opened_at=trade_time, bingx_order_id=order_id, entry_fee_usd=fee_usd,
             )
             opened.append(state_module.insert_bullet(fields, bullet_number))
 
@@ -584,6 +622,7 @@ def sync_with_bingx() -> dict:
             outcome = "tp" if live["target_reached"] else "manual"
             closed.extend(close_all_active_bullets(
                 outcome, price, closed_at=trade_time, bingx_close_order_id=order_id,
+                exit_fee_usd_total=fee_usd,
             ))
 
     return {"synced": True, "opened": opened, "closed": closed}
