@@ -1,6 +1,11 @@
 """
 Tests for src/backtest.py. No network: every test passes synthetic
 candles in via the `candles` argument.
+
+The strategy is COIN-MARGINED (BTC collateral, BTC P&L) -- see the
+module docstring. The math below is hand-derived from
+PnL_btc = collateral * leverage * (1 - entry/price), not copied from
+the implementation.
 """
 import pytest
 
@@ -18,144 +23,241 @@ def _flat_candles(n, price):
     return [_candle(i, price, price, price, price) for i in range(n)]
 
 
-# --- pure helpers -------------------------------------------------------
+# --- inverse contract math ---------------------------------------------
 
-def test_combined_pnl_scales_with_leverage():
-    bullets = [{"entry_price": 100.0, "collateral_usd": 1000.0}]
-    # +10% price move at 5x = +50% on the position = +500 on 1000 collateral
-    assert backtest._combined_pnl(bullets, 110.0, 5.0) == pytest.approx(500.0)
-
-
-def test_target_price_single_bullet():
-    bullets = [{"entry_price": 100.0, "collateral_usd": 1000.0}]
-    # +15% combined at 5x needs a +3% price move
-    assert backtest._target_price(bullets, 5.0, 15.0) == pytest.approx(103.0)
+def test_combined_pnl_btc_is_capped_not_linear():
+    bullets = [{"entry_price": 100.0, "collateral_btc": 1.0}]
+    # +100% price move at 5x: PnL = 1 * 5 * (1 - 100/200) = 2.5 BTC,
+    # NOT the 5 BTC a linear/USDT-margined intuition would suggest.
+    assert backtest._combined_pnl_btc(bullets, 200.0, 5.0) == pytest.approx(2.5)
+    # As price runs away, BTC gains asymptote at collateral * leverage.
+    assert backtest._combined_pnl_btc(bullets, 1e9, 5.0) == pytest.approx(5.0, rel=1e-6)
 
 
-def test_target_price_averages_across_bullets():
-    # Two equal-size bullets at 100 and 200: the combined target sits
-    # between each one's individual target, weighted by size.
+def test_combined_pnl_btc_zero_at_entry():
+    bullets = [{"entry_price": 100.0, "collateral_btc": 1.0}]
+    assert backtest._combined_pnl_btc(bullets, 100.0, 5.0) == pytest.approx(0.0)
+
+
+def test_target_price_btc_needs_more_than_the_linear_move():
+    bullets = [{"entry_price": 100.0, "collateral_btc": 1.0}]
+    price = backtest._target_price_btc(bullets, 5.0, 15.0)
+    # Linear intuition says +3%; inverse needs slightly more.
+    assert price == pytest.approx(100.0 * 5 / 4.85)
+    assert price > 103.0
+    # Sanity: at that price the position really is +15% in BTC.
+    assert backtest._combined_pnl_btc(bullets, price, 5.0) == pytest.approx(0.15)
+
+
+def test_target_price_usd_triggers_earlier_than_btc():
+    bullets = [{"entry_price": 100.0, "collateral_btc": 1.0}]
+    btc_target = backtest._target_price_btc(bullets, 5.0, 15.0)
+    usd_target = backtest._target_price_usd(bullets, 5.0, 15.0)
+    # Part of a USD gain comes from the collateral itself appreciating,
+    # so the USD target is reached at a lower price.
+    assert usd_target < btc_target
+
+
+def test_target_price_usd_really_is_15pct_in_usd():
+    bullets = [{"entry_price": 100.0, "collateral_btc": 1.0}]
+    price = backtest._target_price_usd(bullets, 5.0, 15.0)
+    equity_btc = 1.0 + backtest._combined_pnl_btc(bullets, price, 5.0)
+    usd_committed = 1.0 * 100.0
+    assert equity_btc * price / usd_committed == pytest.approx(1.15)
+
+
+def test_liquidation_at_16_67_pct_when_fully_deployed():
+    # Coin-margined 5x liquidates at -16.67%, not the -20% a USDT-margined
+    # position would: the collateral loses USD value on the way down too.
+    bullets = [{"entry_price": 100.0, "collateral_btc": 1.0}]
+    liq = backtest._liquidation_price(bullets, balance_btc=1.0, leverage=5.0)
+    assert liq == pytest.approx(100.0 * 5 / 6)
+    assert liq == pytest.approx(83.333, abs=0.01)
+
+
+def test_cross_margin_makes_a_thinly_deployed_round_far_safer():
+    # Only 2 of 30 bullets deployed: the untouched balance backs the
+    # position, pushing liquidation far below the fully-deployed -16.67%.
     bullets = [
-        {"entry_price": 100.0, "collateral_usd": 1000.0},
-        {"entry_price": 200.0, "collateral_usd": 1000.0},
+        {"entry_price": 100.0, "collateral_btc": 1.0 / 30},
+        {"entry_price": 100.0, "collateral_btc": 1.0 / 30},
     ]
-    price = backtest._target_price(bullets, 5.0, 15.0)
-    assert backtest._combined_pnl(bullets, price, 5.0) == pytest.approx(0.15 * 2000.0)
+    liq = backtest._liquidation_price(bullets, balance_btc=1.0, leverage=5.0)
+    assert liq < 30.0
 
 
-def test_liquidation_price_uses_full_round_balance():
-    # Cross margin: the whole balance backs the position, so a round with
-    # only 1 of 30 bullets deployed liquidates far below that bullet's own
-    # isolated liquidation price (which at 5x would be -20%, i.e. 80).
-    bullets = [{"entry_price": 100.0, "collateral_usd": 1000.0}]
-    liq_full = backtest._liquidation_price(bullets, balance=30000.0, leverage=5.0)
-    liq_thin = backtest._liquidation_price(bullets, balance=1000.0, leverage=5.0)
-    assert liq_thin == pytest.approx(80.0)   # matches isolated math when balance == collateral
-    assert liq_full < liq_thin                # more headroom with the unused budget backing it
+# --- cycle-top position sizing ------------------------------------------
+
+def test_size_factor_full_below_threshold():
+    assert backtest._size_factor(1.0) == 1.0
+    assert backtest._size_factor(backtest.MAYER_FULL_SIZE) == 1.0
+
+
+def test_size_factor_zero_at_cycle_top():
+    assert backtest._size_factor(backtest.MAYER_STOP) == 0.0
+    assert backtest._size_factor(3.0) == 0.0
+
+
+def test_size_factor_scales_linearly_in_between():
+    midpoint = (backtest.MAYER_FULL_SIZE + backtest.MAYER_STOP) / 2
+    assert backtest._size_factor(midpoint) == pytest.approx(0.5)
+
+
+def test_size_factor_unknown_mayer_is_full_size():
+    assert backtest._size_factor(None) == 1.0
 
 
 # --- full simulation ----------------------------------------------------
 
 def test_flat_market_only_bleeds_fees():
     result = backtest.run_backtest(
-        "2023-01-01", "2023-01-10", initial_balance_usd=10000.0,
+        "2023-01-01", "2023-01-10", initial_balance_btc=1.0,
         candles=_flat_candles(10, 100.0),
     )
-    # No price movement -> no TP, no liquidation, just entry fees paid.
     assert result["rounds_take_profit"] == 0
     assert result["rounds_liquidated"] == 0
     assert result["round_still_open"] is True
-    assert result["final_balance_usd"] < 10000.0
-    assert result["total_return_pct"] < 0
+    assert result["final_balance_btc"] < 1.0  # entry fees only
 
 
-def test_take_profit_closes_round_and_compounds():
-    # Day 0 opens a bullet at 100. Day 1 rallies well past the +3% price
-    # move a lone bullet needs for +15% combined at 5x.
+def test_take_profit_closes_round_and_compounds_btc():
     candles = [
         _candle(0, 100.0, 100.0, 100.0, 100.0),
         _candle(1, 100.0, 120.0, 100.0, 120.0),
     ]
     result = backtest.run_backtest(
-        "2023-01-01", "2023-01-02", initial_balance_usd=10000.0, candles=candles,
+        "2023-01-01", "2023-01-02", initial_balance_btc=1.0, candles=candles,
     )
     assert result["rounds_take_profit"] >= 1
-    assert result["final_balance_usd"] > 10000.0
-    first_round = result["rounds"][0]
-    assert first_round["outcome"] == "take_profit"
-    # Booked at the target price, not at the day's high (which overshot).
-    assert first_round["exit_price"] == pytest.approx(103.0, abs=0.5)
+    assert result["final_balance_btc"] > 1.0
+    assert result["rounds"][0]["outcome"] == "take_profit"
 
 
-def test_liquidation_wipes_balance_and_stops_trading():
-    # A crash deep enough to take equity to zero even with the full
-    # 10k balance backing a growing position.
-    candles = [_candle(0, 100.0, 100.0, 100.0, 100.0)]
-    candles += [_candle(i, 100.0, 100.0, 100.0, 100.0) for i in range(1, 30)]
-    candles.append(_candle(30, 100.0, 100.0, 1.0, 1.0))  # catastrophic drop
+def test_liquidation_wipes_balance():
+    candles = _flat_candles(30, 100.0)
+    candles.append(_candle(30, 100.0, 100.0, 1.0, 1.0))
     result = backtest.run_backtest(
-        "2023-01-01", "2023-01-31", initial_balance_usd=10000.0, candles=candles,
+        "2023-01-01", "2023-01-31", initial_balance_btc=1.0, candles=candles,
     )
     assert result["rounds_liquidated"] == 1
-    assert result["final_balance_usd"] == 0.0
-    assert result["total_return_pct"] == -100.0
+    assert result["final_balance_btc"] == 0.0
+    assert result["btc_return_pct"] == -100.0
 
 
 def test_liquidation_takes_precedence_over_take_profit_same_day():
-    # One day whose range spans both the liquidation price and the target.
-    # The conservative reading (documented) is that liquidation hit first.
-    #
-    # max_bullets_per_round=1 on purpose: it takes a fully-deployed round
-    # for liquidation to be reachable at all (see the test below).
+    # max_bullets_per_round=1 so the round is fully deployed and therefore
+    # liquidatable at all (see test_cross_margin_makes_a_thinly_deployed...).
     candles = [
         _candle(0, 100.0, 100.0, 100.0, 100.0),
         _candle(1, 100.0, 500.0, 1.0, 100.0),
     ]
     result = backtest.run_backtest(
-        "2023-01-01", "2023-01-02", initial_balance_usd=10000.0, candles=candles,
+        "2023-01-01", "2023-01-02", initial_balance_btc=1.0, candles=candles,
         max_bullets_per_round=1,
     )
     assert result["rounds_liquidated"] == 1
     assert result["rounds_take_profit"] == 0
 
 
-def test_cross_margin_makes_a_thinly_deployed_round_unliquidatable():
-    # The whole point of the 30-bullet budget under CROSS margin: with
-    # only a couple of bullets deployed, the untouched balance backs the
-    # position so heavily that the liquidation price goes NEGATIVE --
-    # i.e. price would have to go below zero. Under ISOLATED margin those
-    # same bullets would each die at -20%.
-    bullets = [
-        {"entry_price": 100.0, "collateral_usd": 10000.0 / 30},
-        {"entry_price": 100.0, "collateral_usd": 10000.0 / 30},
-    ]
-    assert backtest._liquidation_price(bullets, balance=10000.0, leverage=5.0) < 0
-
-
 def test_round_cap_limits_bullets_per_round():
     result = backtest.run_backtest(
-        "2023-01-01", "2023-02-20", initial_balance_usd=10000.0,
-        candles=_flat_candles(45, 100.0),  # more days than the cap
-        max_bullets_per_round=30,
+        "2023-01-01", "2023-02-20", initial_balance_btc=1.0,
+        candles=_flat_candles(45, 100.0), max_bullets_per_round=30,
     )
     assert result["rounds"][0]["bullets_used"] == 30
 
 
 def test_one_bullet_per_day_even_across_a_round_boundary():
     # Day 1 closes round 1 in profit. The next round's first bullet must
-    # wait for day 2 -- the one-new-bullet-per-day rule is global, it
-    # isn't reset by a round ending (mirrors bullets._opened_today()).
+    # wait for day 2 -- the one-new-bullet-per-day rule is global and is
+    # not reset by a round ending (mirrors bullets._opened_today()).
     candles = [
         _candle(0, 100.0, 100.0, 100.0, 100.0),
-        _candle(1, 100.0, 120.0, 100.0, 120.0),   # round 1 hits TP here
-        _candle(2, 120.0, 120.0, 120.0, 120.0),   # round 2's first bullet
+        _candle(1, 100.0, 120.0, 100.0, 120.0),
+        _candle(2, 120.0, 120.0, 120.0, 120.0),
     ]
     result = backtest.run_backtest(
-        "2023-01-01", "2023-01-03", initial_balance_usd=10000.0, candles=candles,
+        "2023-01-01", "2023-01-03", initial_balance_btc=1.0, candles=candles,
     )
-    assert result["rounds"][0]["bullets_used"] == 2   # days 0 and 1
+    assert result["rounds"][0]["bullets_used"] == 2
     assert result["rounds"][1]["opened_at"] == "2023-01-03"
     assert result["rounds"][1]["bullets_used"] == 1
+
+
+def _hot_market():
+    """Warmup at a low price, then a market trading at 3x it -> Mayer well
+    above MAYER_STOP."""
+    warmup = [_candle(-200 + i, 100.0, 100.0, 100.0, 100.0) for i in range(200)]
+    return warmup, _flat_candles(10, 300.0)
+
+
+def test_derisk_bullet_size_stops_opening_when_mayer_is_extreme():
+    warmup, candles = _hot_market()
+    result = backtest.run_backtest(
+        "2023-01-01", "2023-01-10", initial_balance_btc=1.0,
+        candles=candles, warmup_candles=warmup, derisk_mode="bullet_size",
+    )
+    assert result["rounds_total"] == 0
+    assert result["final_balance_btc"] == 1.0  # untouched, not even fees
+
+
+def test_derisk_off_opens_normally_in_the_same_hot_market():
+    warmup, candles = _hot_market()
+    result = backtest.run_backtest(
+        "2023-01-01", "2023-01-10", initial_balance_btc=1.0,
+        candles=candles, warmup_candles=warmup, derisk_mode="off",
+    )
+    assert result["rounds"][0]["bullets_used"] == 10
+
+
+def test_derisk_withdraw_moves_btc_out_of_the_trading_account():
+    warmup, candles = _hot_market()
+    result = backtest.run_backtest(
+        "2023-01-01", "2023-01-10", initial_balance_btc=1.0,
+        candles=candles, warmup_candles=warmup, derisk_mode="withdraw",
+    )
+    # Mayer past MAYER_STOP -> exposure target is 0, so everything is
+    # banked and nothing is left in the trading account to lose.
+    assert result["banked_btc"] == pytest.approx(1.0)
+    assert result["trading_balance_btc"] == pytest.approx(0.0)
+    assert result["final_balance_btc"] == pytest.approx(1.0)
+
+
+def test_withdraw_protects_profit_from_a_liquidation_but_bullet_size_does_not():
+    # Warmup low so Mayer starts hot, then a catastrophic drop. Under
+    # cross margin a liquidation takes the whole TRADING balance -- only
+    # BTC already moved out survives. This is the core finding.
+    warmup = [_candle(-200 + i, 100.0, 100.0, 100.0, 100.0) for i in range(200)]
+    # Mayer ~1.95 (midpoint) -> factor 0.5: half is banked, half at risk.
+    candles = [_candle(i, 195.0, 195.0, 195.0, 195.0) for i in range(30)]
+    candles.append(_candle(30, 195.0, 195.0, 1.0, 1.0))  # wipeout
+
+    withdrawn = backtest.run_backtest(
+        "2023-01-01", "2023-01-31", initial_balance_btc=1.0,
+        candles=candles, warmup_candles=warmup, derisk_mode="withdraw",
+    )
+    sized = backtest.run_backtest(
+        "2023-01-01", "2023-01-31", initial_balance_btc=1.0,
+        candles=candles, warmup_candles=warmup, derisk_mode="bullet_size",
+    )
+    assert withdrawn["rounds_liquidated"] == 1
+    assert sized["rounds_liquidated"] == 1
+    # Smaller bullets did NOT protect the balance sitting behind them.
+    assert sized["final_balance_btc"] == pytest.approx(0.0)
+    # Withdrawn BTC survived the same liquidation.
+    assert withdrawn["final_balance_btc"] > 0.4
+
+
+def test_invalid_derisk_mode_raises():
+    with pytest.raises(ValueError):
+        backtest.run_backtest("2023-01-01", "2023-01-10",
+                              candles=_flat_candles(3, 100.0), derisk_mode="maybe")
+
+
+def test_invalid_target_mode_raises():
+    with pytest.raises(ValueError):
+        backtest.run_backtest("2023-01-01", "2023-01-10",
+                              candles=_flat_candles(3, 100.0), target_mode="eur")
 
 
 def test_empty_candles_raises():

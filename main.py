@@ -14,9 +14,13 @@ Entry point. Available commands:
     python main.py bullet 500 60000 3  -> same with entry price 60000 and x3 leverage
 
     --- Backtesting (offline; touches no account, no state) ---
-    python main.py backtest 2023-01-01 2025-07-24        -> simulate the bullet strategy over
-                                                            that date range with a 10k balance
-    python main.py backtest 2023-01-01 2025-07-24 50000  -> same, starting from 50k
+    python main.py backtest 2023-01-01 2025-07-24       -> simulate the bullet strategy over
+                                                           that range, starting from 1 BTC
+    python main.py backtest 2023-01-01 2025-07-24 2.5   -> same, starting from 2.5 BTC
+    python main.py backtest 2023-01-01 2025-07-24 1 --detail  -> plus per-round breakdown
+    Coin-margined (BTC collateral, BTC profit). Compares 6 variants: target
+    measured in BTC vs USD, each with de-risking off / by bullet size /
+    by withdrawing BTC out of the account as the Mayer Multiple heats up.
     NOTE: pick a BULL-market range yourself. This strategy is long-only and
     was never meant to run through a bear market -- judging when a bull
     market is underway is the trader's call, not the code's.
@@ -420,36 +424,63 @@ def cmd_bingx_reconcile():
 
 def cmd_backtest(args: list[str]):
     if len(args) < 2:
-        print("Usage: python main.py backtest START_DATE END_DATE [INITIAL_BALANCE_USD]")
-        print("  e.g. python main.py backtest 2023-01-01 2025-07-24 10000")
+        print("Usage: python main.py backtest START_DATE END_DATE [INITIAL_BALANCE_BTC] [--detail]")
+        print("  e.g. python main.py backtest 2023-01-01 2025-07-24 1.0")
+        print("\nCompares 4 variants: target measured in BTC vs USD, each with and")
+        print("without cycle-top position sizing (shrinking bullet size as the Mayer")
+        print("Multiple approaches historical top territory).")
         print("\nPick a BULL-market range yourself: this strategy is long-only and")
         print("was never meant to run through a bear market (see src/backtest.py).")
         sys.exit(1)
     from src import backtest
     start_date, end_date = args[0], args[1]
-    initial_balance = float(args[2]) if len(args) >= 3 else 10000.0
+    positional = [a for a in args[2:] if not a.startswith("--")]
+    initial_btc = float(positional[0]) if positional else 1.0
+    show_detail = "--detail" in args
 
-    print(f"Fetching daily candles {start_date}..{end_date} from Binance...")
-    result = backtest.run_backtest(start_date, end_date, initial_balance_usd=initial_balance)
+    print(f"Fetching daily candles {start_date}..{end_date} from Binance "
+          f"(plus {backtest.SMA_WARMUP_DAYS}d warmup for the Mayer Multiple)...")
 
-    print(f"\n=== Backtest {result['start_date']} -> {result['end_date']} "
-          f"({result['days_simulated']} days) ===")
-    print(f"Initial balance : ${result['initial_balance_usd']:,.2f}")
-    print(f"Final balance   : ${result['final_balance_usd']:,.2f}")
-    print(f"Total return    : {result['total_return_pct']:+.2f}%")
-    print(f"Max drawdown    : -{result['max_drawdown_pct']:.2f}%")
-    print(f"Rounds          : {result['rounds_total']} total — "
-          f"{result['rounds_take_profit']} take-profit, "
-          f"{result['rounds_liquidated']} liquidated"
-          + (", 1 still open at the end" if result["round_still_open"] else ""))
+    variants = [
+        (tm, dm)
+        for tm in ("btc", "usd")
+        for dm in ("off", "bullet_size", "withdraw")
+    ]
+    results = []
+    for target_mode, derisk_mode in variants:
+        results.append(backtest.run_backtest(
+            start_date, end_date, initial_balance_btc=initial_btc,
+            target_mode=target_mode, derisk_mode=derisk_mode,
+        ))
 
-    print("\nPer round:")
-    for r in result["rounds"]:
-        closed = r["closed_at"] or "(still open)"
-        print(f"  #{r['round_number']:<3} {r['outcome']:<12} {r['opened_at']} -> {closed:<12} "
-              f"{r['bullets_used']:>2} bullets  "
-              f"${r['start_balance_usd']:>12,.2f} -> ${r['end_balance_usd']:>12,.2f}  "
-              f"({r['pnl_usd']:+,.2f})")
+    head = results[0]
+    print(f"\n=== Backtest {head['start_date']} -> {head['end_date']} "
+          f"({head['days_simulated']} days, coin-margined / BTC collateral) ===")
+    print(f"Start: {initial_btc} BTC   |   End price: ${head['end_price']:,.2f}\n")
+
+    print(f"{'target':<7} {'de-risk':<12} {'trading':>10} {'banked':>10} {'TOTAL BTC':>11} "
+          f"{'BTC ret':>9} {'end USD':>12} {'TP':>4} {'liq':>4}")
+    print("-" * 86)
+    for r in results:
+        print(f"{r['target_mode']:<7} {r['derisk_mode']:<12} "
+              f"{r['trading_balance_btc']:>10.5f} {r['banked_btc']:>10.5f} "
+              f"{r['final_balance_btc']:>11.5f} {r['btc_return_pct']:>8.1f}% "
+              f"${r['final_value_usd']:>11,.0f} "
+              f"{r['rounds_take_profit']:>4} {r['rounds_liquidated']:>4}")
+
+    best = max(results, key=lambda r: r["final_balance_btc"])
+    print(f"\nBest by BTC accumulated: target={best['target_mode']}, "
+          f"de-risk={best['derisk_mode']} "
+          f"({best['final_balance_btc']:.5f} BTC, {best['btc_return_pct']:+.1f}%)")
+
+    if show_detail:
+        print(f"\n--- Per-round detail for the best variant ---")
+        for r in best["rounds"]:
+            closed = r["closed_at"] or "(still open)"
+            print(f"  #{r['round_number']:<3} {r['outcome']:<12} {r['opened_at']} -> {closed:<12} "
+                  f"{r['bullets_used']:>2} bullets  "
+                  f"{r['start_balance_btc']:>10.6f} -> {r['end_balance_btc']:>10.6f} BTC "
+                  f"({r['pnl_btc']:+.6f})")
 
 
 def cmd_bingx_auto_trade(args: list[str]):

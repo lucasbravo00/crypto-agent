@@ -56,6 +56,12 @@ src/
   dca.py                  -> sync_with_bingx() imports real spot BTC buy fills from
                              your REAL BingX account into dca_purchases, deduped by
                              trade id -- no manual entry needed once it's set up.
+  memory.py               -> temporal context for the report: today's key market
+                             indicators vs 1/7/30 days ago, with trend labels computed
+                             here rather than left for the LLM to infer.
+  backtest.py             -> offline simulation of the bullet strategy against real
+                             historical candles, coin-margined (see "Backtesting").
+                             Touches no account and no state.
   bingx_client.py         -> BingX access via ccxt, split into two clearly separated
                              halves: (1) DEMO/sandbox trading -- hard-coded, no code
                              path to your live account, can place orders (used only by
@@ -76,6 +82,9 @@ tests/
                              and reconciliation (isolated temp state, Supabase/BingX
                              force-disabled regardless of the ambient environment)
   test_dca.py               -> unit tests for DCA sync against (mocked) BingX
+  test_memory.py            -> unit tests for the memory/trend comparisons
+  test_backtest.py          -> unit tests for the backtest, incl. hand-derived inverse
+                             contract math (synthetic candles, no network)
 state/                     -> local JSON state, used only when Supabase isn't configured
 logs/                      -> JSONL trace of every agent decision (auto-created)
 dashboard/index.html       -> single-file web dashboard (see "Web dashboard" below)
@@ -348,40 +357,77 @@ Netlify (no build command; output/root directory = `dashboard`).
 
 ## Backtesting
 
-`python main.py backtest START_DATE END_DATE [INITIAL_BALANCE]` replays
-the round-based bullet mechanics against real historical daily candles
-(from Binance — BingX's public API only reaches back to late 2023, not
-far enough for the 2020-2021 cycle). It touches no account and no state.
+`python main.py backtest START_DATE END_DATE [BTC] [--detail]` replays the
+round-based bullet mechanics against real historical daily candles (from
+Binance — BingX's public API only reaches back to late 2023, not far
+enough for the 2020-2021 cycle). It touches no account and no state.
+
+**Coin-margined.** Collateral and P&L are in BTC, not USDT, because that
+is how the strategy is actually traded. This is not a cosmetic
+difference: `PnL_btc = collateral * leverage * (1 - entry/price)`, so BTC
+gains are asymptotically capped at `collateral * leverage`, and
+liquidation arrives *earlier* than linear intuition suggests — at 5x a
+fully-deployed round liquidates at **-16.67%**, not -20%, because the
+collateral itself loses USD value on the way down.
 
 The date range is a required, deliberate input: this strategy is
 long-only and was never meant to run through a bear market. Judging when
 a bull market is underway is the trader's call, not the code's — the
 same reason the live agent never emits buy/sell signals.
 
-**What the first runs showed (2026-07-26).** Across both bull cycles the
-mechanics compound impressively and then lose everything to a single
-event:
+Each run compares six variants: target measured in **BTC** vs **USD**,
+each with de-risking **off**, by **bullet_size** (smaller bullets as the
+Mayer Multiple heats up), or by **withdraw** (moving BTC out of the
+trading account entirely).
 
-| Range | Rounds won | Result |
-|---|---|---|
-| 2020-10-01 → 2021-11-08 | 66 straight | $10k → $28.4k, then **liquidated** (2021-06-08, the May-2021 crash) |
-| 2023-01-01 → 2025-07-24 | 88 straight | $10k → $191k, then **liquidated** (2025-02-28) |
-| 2023 only | 41 straight | $10k → $32k (+220%), round still open at year end |
-| 2024 only | 43 straight | $10k → $41.6k (+316%), round still open at year end |
+### What the runs showed (2026-07-26), starting from 1.0 BTC
 
-The failure mode is the same both times, and it is NOT the bear market
-the strategy is designed to sit out: once all 30 bullets are deployed,
-the round's total collateral equals the account balance, so the whole
-account is effectively at 5x — and a ~20% drop below the round's
-*weighted average entry* liquidates everything. Verified against the raw
-candles rather than trusted from the summary: the 2025 round opened
-2025-01-22 at ~$106k, averaged ~$99.5k across 30 bullets, and BTC's
-2025-02-28 low of $78,258 is almost exactly 20% below that. Both wipeouts
-happened *inside* bull markets, during ordinary corrections.
+| Cycle | de-risk `off` | de-risk `bullet_size` | de-risk `withdraw` |
+|---|---|---|---|
+| 2020-10 → 2021-11 | **-100%** | **-100%** | **+45.5%** (1.455 BTC) |
+| 2023-01 → 2025-07 | **-100%** | **-100%** | **+69.4%** (1.694 BTC) |
 
-Note also the max drawdown even in the winning years (-71% in 2024, -76%
-in 2023): that is unrealized drawdown *within* rounds, i.e. what the
-account looks like mid-round before a target is reached.
+Three findings, each verified against the raw candles rather than
+trusted from a summary:
+
+**1. Without de-risking the strategy always ends at zero.** Both cycles
+ran dozens of consecutive winning rounds (63 and 58) and then gave it all
+back to a single liquidation. Critically, neither wipeout happened at a
+cycle top or in the bear market this strategy is designed to sit out —
+both were *ordinary corrections inside a bull run*: 2021-05-19 (the May
+crash) and 2025-02-28. Once all 30 bullets are deployed the round's
+collateral equals the account balance, so the whole account is
+effectively at 5x and a ~17% drop below the round's weighted average
+entry ends it.
+
+**2. Shrinking bullet size does not protect anything.** This was the
+originator's stated mechanism, and the backtest says it fails: under
+CROSS margin a liquidation takes the entire trading balance, not just the
+collateral currently deployed. Smaller bullets leave the same balance
+sitting in the account backing them, and it dies with the position —
+`bullet_size` scored identically to `off` (-100%) in both cycles. The
+stated *goal* ("so the liquidation won't consume all the gains so far")
+is real and correct; only the mechanism doesn't achieve it under cross
+margin.
+
+**3. What does work is withdrawing BTC out of the account.** Same Mayer
+Multiple signal, but instead of trading smaller, move the funds where a
+liquidation cannot reach them (exposure targeted as a fraction of total
+wealth, one-way ratchet, only between rounds). Both cycles then finish
+positive *in BTC terms* — including 2023-2025, which still took its
+liquidation but had already banked most of the gains by then.
+
+**4. The BTC-denominated target beat the USD one** in both cycles (+69.4%
+vs +40.2%, and +45.5% vs +35.5%). The USD target triggers earlier because
+part of a USD gain comes from the collateral appreciating rather than
+from the trade, so it books smaller wins and gives up more upside.
+
+Caveat worth keeping in mind: the Mayer Multiple never exceeded **1.85**
+in the 2023-2025 cycle — it never came close to the 2.4 that marked
+previous tops, and the February 2025 liquidation happened with Mayer at
+~1.03, i.e. a *cold* market. The de-risking signal is far from a top
+detector; it worked here mostly by trimming exposure steadily, not by
+calling the top.
 
 Documented simplifications (see `src/backtest.py`): liquidation is
 modeled as round equity hitting zero, which is *optimistic* — real
@@ -392,22 +438,29 @@ real 0.05% taker fee is.
 
 ## Roadmap
 
-1. **Live-verify the auto-close path**: `auto_trade()`'s branch that
+1. **Act on the backtest findings**: the simulation says the live setup
+   (no de-risking) ends at -100% eventually, and that only withdrawing
+   BTC out of the trading account protects gains. Nothing in the live
+   code implements that yet — it is currently backtest-only.
+2. **Live-verify the auto-close path**: `auto_trade()`'s branch that
    closes a round when the combined +15% target is actually reached in a
    real, automatic `bullet-check` cycle has only been unit-tested and
    manually invoked once (an emergency cleanup) — worth watching for
    naturally or testing deliberately.
-2. **Memory**: compare against previous reports (now stored in
-   `daily_snapshots`) to detect regime changes.
-3. **Telegram bidirectional bot**: respond to commands from the chat
+3. **Cross-margin liquidation display**: `strategy_tools.simulate_bullet_math()`
+   still reports a per-bullet `approx_liquidation_price` using isolated,
+   USDT-margined math. Under cross margin with BTC collateral the real
+   liquidation point is a function of the whole round vs. account equity
+   (the backtest already models this correctly; the live display does not).
+4. **Telegram bidirectional bot**: respond to commands from the chat
    (e.g. `/bullet-open`) talking directly to Supabase, same pattern as
    the dashboard.
-4. **Backtesting**: simulate the bullet cycle against historical BingX
-   data.
 
 Done: BingX demo auto-trading, DCA auto-sync from real BingX trades,
 round-based bullet accounting, reconciliation hardening, auto-trade
-notifications, the web dashboard (including market-cycle charts).
+notifications, real exchange fees in P&L, the web dashboard (including
+market-cycle charts), report memory (1/7/30-day trend context),
+Predictive Ranges, and the coin-margined backtester.
 
 ## Disclaimer
 
