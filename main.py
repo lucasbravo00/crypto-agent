@@ -21,6 +21,14 @@ Entry point. Available commands:
     Coin-margined (BTC collateral, BTC profit). Compares 6 variants: target
     measured in BTC vs USD, each with de-risking off / by bullet size /
     by withdrawing BTC out of the account as the Mayer Multiple heats up.
+
+    python main.py backtest-timing 2023-01-01 2025-07-24 1  -> compares WHEN in the
+                                                               day a bullet buys: fixed
+                                                               (today's live behavior)
+                                                               vs RSI(15m) oversold vs
+                                                               an idealized day-low
+                                                               ceiling. Slower: fetches
+                                                               15-minute candles.
     NOTE: pick a BULL-market range yourself. This strategy is long-only and
     was never meant to run through a bear market -- judging when a bull
     market is underway is the trader's call, not the code's.
@@ -483,6 +491,66 @@ def cmd_backtest(args: list[str]):
                   f"({r['pnl_btc']:+.6f})")
 
 
+def cmd_backtest_timing(args: list[str]):
+    if len(args) < 2:
+        print("Usage: python main.py backtest-timing START_DATE END_DATE [INITIAL_BALANCE_BTC]")
+        print("  e.g. python main.py backtest-timing 2023-01-01 2025-07-24 1.0")
+        print("\nCompares WHEN in the day a new bullet buys, holding everything else")
+        print("fixed (target=btc, de-risk=off): 'fixed' (today's live behavior --")
+        print("buy at the daily open), 'rsi_oversold' at a few thresholds and")
+        print("'bollinger_lower' (both realistic: only use information available at")
+        print("the moment), and 'day_low' (an IDEALIZED reference point -- the day's")
+        print("actual best price, only knowable in hindsight, i.e. not a real")
+        print("executable strategy).")
+        print("\nFetches 15-minute candles -- much heavier than the daily backtest,")
+        print("expect it to take noticeably longer.")
+        sys.exit(1)
+    from src import backtest
+    start_date, end_date = args[0], args[1]
+    positional = [a for a in args[2:] if not a.startswith("--")]
+    initial_btc = float(positional[0]) if positional else 1.0
+
+    print(f"Fetching daily candles {start_date}..{end_date} from Binance...")
+    daily = backtest.fetch_daily_candles(start_date, end_date)
+    print(f"Fetching 15m candles {start_date}..{end_date} from Binance "
+          f"(this is the slow part)...")
+    intraday = backtest.fetch_intraday_candles(start_date, end_date)
+
+    runs = [("fixed", {}, "fixed")]
+    runs += [("rsi_oversold", {"rsi_threshold": t}, f"rsi<{t:.0f}") for t in (20.0, 25.0, 30.0, 35.0)]
+    runs += [("bollinger_lower", {"bollinger_std": s}, f"boll{s:.1f}sd") for s in (1.5, 2.0, 2.5)]
+    runs += [("day_low", {}, "day_low")]
+
+    results = []
+    for entry_timing, extra_kwargs, label in runs:
+        kwargs = dict(
+            initial_balance_btc=initial_btc, target_mode="btc", derisk_mode="off",
+            entry_timing=entry_timing, candles=daily, **extra_kwargs,
+        )
+        if entry_timing != "fixed":
+            kwargs["intraday_candles"] = intraday
+        result = backtest.run_backtest(start_date, end_date, **kwargs)
+        result["_label"] = label
+        results.append(result)
+
+    head = results[0]
+    print(f"\n=== Entry timing {head['start_date']} -> {head['end_date']} "
+          f"({head['days_simulated']} days) ===")
+    print(f"Start: {initial_btc} BTC   |   target=btc, de-risk=off\n")
+
+    print(f"{'entry_timing':<16} {'FINAL BTC':>11} {'BTC ret':>9} {'end USD':>12} {'TP':>4} {'liq':>4}")
+    print("-" * 60)
+    for r in results:
+        print(f"{r['_label']:<16} {r['final_balance_btc']:>11.5f} {r['btc_return_pct']:>8.1f}% "
+              f"${r['final_value_usd']:>11,.0f} {r['rounds_take_profit']:>4} {r['rounds_liquidated']:>4}")
+
+    fixed_result = results[0]
+    print(f"\n'fixed' (today's live behavior) = {fixed_result['final_balance_btc']:.5f} BTC "
+          f"({fixed_result['btc_return_pct']:+.1f}%)")
+    print("'day_low' is an IDEALIZED ceiling (hindsight only) -- not a real strategy;")
+    print("it shows the most any same-day timing approach could possibly capture.")
+
+
 def cmd_bingx_auto_trade(args: list[str]):
     from src import bullets
     test = "--test" in args
@@ -531,6 +599,8 @@ if __name__ == "__main__":
         cmd_bingx_reconcile()
     elif cmd == "backtest":
         cmd_backtest(rest)
+    elif cmd == "backtest-timing":
+        cmd_backtest_timing(rest)
     elif cmd == "bingx-auto-trade":
         cmd_bingx_auto_trade(rest)
     else:

@@ -92,19 +92,35 @@ def fetch_daily_candles(start_date: str, end_date: str, symbol: str = "BTC/USDT"
     """Daily OHLCV candles in [start_date, end_date], inclusive, from
     Binance's public API (no key needed). Paginated: Binance caps each
     request at 1000 candles."""
+    return _fetch_paginated(start_date, end_date, symbol, "1d", 24 * 60 * 60 * 1000)
+
+
+def fetch_intraday_candles(start_date: str, end_date: str, symbol: str = "BTC/USDT",
+                            timeframe: str = "15m") -> list:
+    """Intraday OHLCV candles in [start_date, end_date], inclusive. Used
+    only by ENTRY_TIMING modes other than "fixed" -- ~96 candles/day at
+    15m, so a multi-year range is tens of thousands of candles and dozens
+    of paginated requests (still just a few seconds over Binance's public
+    API, no key needed)."""
+    step_ms = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000}[timeframe]
+    return _fetch_paginated(start_date, end_date, symbol, timeframe, step_ms)
+
+
+def _fetch_paginated(start_date: str, end_date: str, symbol: str, timeframe: str,
+                      step_ms: int) -> list:
     exchange = ccxt.binance({"enableRateLimit": True})
     since = exchange.parse8601(f"{start_date}T00:00:00Z")
     end_ts = exchange.parse8601(f"{end_date}T23:59:59Z")
 
     candles: list = []
     while since < end_ts:
-        batch = exchange.fetch_ohlcv(symbol, timeframe="1d", since=since, limit=1000)
+        batch = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=1000)
         if not batch:
             break
         candles.extend(c for c in batch if c[0] <= end_ts)
         if len(batch) < 1000:
             break
-        since = batch[-1][0] + 24 * 60 * 60 * 1000
+        since = batch[-1][0] + step_ms
     return candles
 
 
@@ -117,6 +133,143 @@ def _rolling_sma(values: list[float], period: int) -> list[float | None]:
             running -= values[i - period]
         result.append(running / period if i >= period - 1 else None)
     return result
+
+
+# --- Intraday entry timing ----------------------------------------------
+# ENTRY_TIMING options for run_backtest():
+#   "fixed"        -- always buy at the daily open (the live bot's actual
+#                      behavior: bullet-check runs once, right after
+#                      midnight UTC). The baseline everything else is
+#                      measured against.
+#   "rsi_oversold" -- wait for RSI(rsi_period) on `rsi_timeframe` candles
+#                      to drop below rsi_threshold that day, buy at that
+#                      candle's close. REALISTIC: only uses information
+#                      available at the moment of the decision. Falls
+#                      back to the day's last close if the signal never
+#                      fires (still guarantees one bullet per day, same
+#                      as the live cadence).
+#   "bollinger_lower" -- wait for price to close at/below the lower
+#                      Bollinger Band (bollinger_period-SMA minus
+#                      bollinger_std standard deviations) that day, buy at
+#                      that candle's close. Also REALISTIC (no lookahead)
+#                      -- a volatility-based oversold signal rather than
+#                      RSI's momentum-based one, so it can disagree with
+#                      RSI on which candles count as "oversold". Same
+#                      end-of-day fallback as rsi_oversold.
+#   "day_low"      -- buy at the day's actual lowest intraday price.
+#                      NOT a real strategy: this is only knowable in
+#                      hindsight, after the day is over. Included purely
+#                      as an idealized upper bound -- "the best any
+#                      same-day timing approach could possibly have done"
+#                      -- to judge how much of that ceiling the realistic
+#                      approaches actually capture.
+ENTRY_TIMING_MODES = ("fixed", "rsi_oversold", "bollinger_lower", "day_low")
+
+
+def _rsi_series(closes: list[float], period: int = 14) -> list[float | None]:
+    """Wilder-smoothed RSI at every index of `closes` (None until enough
+    history exists). Same smoothing as market_data._rsi, computed once
+    over a whole series instead of a single trailing value."""
+    n = len(closes)
+    result: list[float | None] = [None] * n
+    if n <= period:
+        return result
+
+    def _rsi_from_avgs(avg_gain: float, avg_loss: float) -> float:
+        if avg_loss == 0:
+            return 100.0
+        return 100 - 100 / (1 + avg_gain / avg_loss)
+
+    gains = [max(closes[i] - closes[i - 1], 0) for i in range(1, n)]
+    losses = [max(closes[i - 1] - closes[i], 0) for i in range(1, n)]
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    result[period] = _rsi_from_avgs(avg_gain, avg_loss)
+    for i in range(period, n - 1):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+        result[i + 1] = _rsi_from_avgs(avg_gain, avg_loss)
+    return result
+
+
+def _rolling_std(values: list[float], period: int) -> list[float | None]:
+    """Population std dev over a trailing window, aligned with
+    _rolling_sma (same `period` gives the mean this measures spread
+    around)."""
+    result: list[float | None] = []
+    for i in range(len(values)):
+        if i < period - 1:
+            result.append(None)
+            continue
+        window = values[i - period + 1:i + 1]
+        mean = sum(window) / period
+        variance = sum((v - mean) ** 2 for v in window) / period
+        result.append(variance ** 0.5)
+    return result
+
+
+def _bollinger_lower_series(
+    closes: list[float], period: int = 20, num_std: float = 2.0,
+) -> list[float | None]:
+    """Lower Bollinger Band (SMA - num_std * std dev) at every index."""
+    sma = _rolling_sma(closes, period)
+    std = _rolling_std(closes, period)
+    return [
+        (sma[i] - num_std * std[i]) if sma[i] is not None and std[i] is not None else None
+        for i in range(len(closes))
+    ]
+
+
+def _entry_prices_by_day(
+    intraday_candles: list,
+    entry_timing: str,
+    rsi_period: float = 14,
+    rsi_threshold: float = 30.0,
+    bollinger_period: int = 20,
+    bollinger_std: float = 2.0,
+) -> dict[str, float]:
+    """One entry price per calendar day (UTC), chosen according to
+    entry_timing -- see ENTRY_TIMING_MODES. "rsi_oversold" and
+    "bollinger_lower" both buy at the close of the first candle that day
+    where their signal fires, falling back to the day's last close if it
+    never does."""
+    closes = [c[4] for c in intraday_candles]
+    signal: list[bool] | None = None
+    if entry_timing == "rsi_oversold":
+        rsi = _rsi_series(closes, int(rsi_period))
+        signal = [v is not None and v < rsi_threshold for v in rsi]
+    elif entry_timing == "bollinger_lower":
+        lower_band = _bollinger_lower_series(closes, bollinger_period, bollinger_std)
+        signal = [
+            # Strict "<", not "<=": with zero volatility the band collapses
+            # exactly onto price (see _bollinger_lower_series), which would
+            # otherwise fire a false signal the moment the window warms up.
+            lower_band[i] is not None and closes[i] < lower_band[i]
+            for i in range(len(closes))
+        ]
+
+    days: dict[str, list[tuple[int, list]]] = {}
+    for i, c in enumerate(intraday_candles):
+        date = datetime.fromtimestamp(c[0] / 1000, tz=timezone.utc).date().isoformat()
+        days.setdefault(date, []).append((i, c))
+
+    entry_by_date: dict[str, float] = {}
+    for date, day_candles in days.items():
+        if entry_timing == "day_low":
+            entry_by_date[date] = min(c[3] for _, c in day_candles)
+            continue
+
+        chosen = None
+        for i, c in day_candles:
+            if signal[i]:
+                chosen = c[4]  # close of the candle that triggered the signal
+                break
+        # Fallback: signal never fired this day -- buy at the last close
+        # anyway, so the one-bullet-per-day cadence the rest of the
+        # strategy depends on is never silently broken.
+        entry_by_date[date] = chosen if chosen is not None else day_candles[-1][1][4]
+
+    return entry_by_date
 
 
 def _size_factor(mayer: float | None) -> float:
@@ -186,8 +339,14 @@ def run_backtest(
     derisk_mode: str = "withdraw",
     drawdown_lookback_days: int = DRAWDOWN_LOOKBACK_DAYS,
     drawdown_stop_pct: float = DRAWDOWN_STOP_PCT,
+    entry_timing: str = "fixed",
+    rsi_period: int = 14,
+    rsi_threshold: float = 30.0,
+    bollinger_period: int = 20,
+    bollinger_std: float = 2.0,
     candles: list | None = None,
     warmup_candles: list | None = None,
+    intraday_candles: list | None = None,
 ) -> dict:
     """Simulate the round-based bullet strategy day by day, coin-margined.
 
@@ -213,9 +372,17 @@ def run_backtest(
             "withdraw" = move BTC out of the trading account entirely, so
             a liquidation cannot reach it. See DERISK_MODES -- under
             cross margin only "withdraw" actually protects profit.
-        candles / warmup_candles: Optional pre-fetched OHLCV, mainly for
-            tests. warmup_candles are the SMA_WARMUP_DAYS candles BEFORE
-            start_date, needed to have a valid Mayer Multiple on day one.
+        entry_timing: Which price within the day a new bullet buys at --
+            see ENTRY_TIMING_MODES. "fixed" (default) matches the live
+            bot's actual behavior (daily open) and needs no intraday
+            data. "rsi_oversold" and "day_low" fetch 15m candles.
+        candles / warmup_candles: Optional pre-fetched daily OHLCV,
+            mainly for tests. warmup_candles are the SMA_WARMUP_DAYS
+            candles BEFORE start_date, needed for a valid Mayer Multiple
+            on day one.
+        intraday_candles: Optional pre-fetched 15m OHLCV for
+            entry_timing != "fixed", mainly for tests. Fetched
+            automatically when omitted.
 
     Returns:
         Summary dict: final BTC balance, BTC return %, per-round detail,
@@ -225,6 +392,8 @@ def run_backtest(
         raise ValueError(f"target_mode must be 'btc' or 'usd', got {target_mode!r}")
     if derisk_mode not in DERISK_MODES:
         raise ValueError(f"derisk_mode must be one of {DERISK_MODES}, got {derisk_mode!r}")
+    if entry_timing not in ENTRY_TIMING_MODES:
+        raise ValueError(f"entry_timing must be one of {ENTRY_TIMING_MODES}, got {entry_timing!r}")
 
     if candles is None:
         # Fetch extra history before start_date so the 200d SMA behind the
@@ -241,6 +410,17 @@ def run_backtest(
 
     if not candles:
         raise ValueError(f"No candles returned for {symbol} in {start_date}..{end_date}")
+
+    entry_price_by_date: dict[str, float] = {}
+    if entry_timing != "fixed":
+        if intraday_candles is None:
+            intraday_candles = fetch_intraday_candles(start_date, end_date, symbol)
+        if not intraday_candles:
+            raise ValueError(f"No intraday candles returned for {symbol} in {start_date}..{end_date}")
+        entry_price_by_date = _entry_prices_by_day(
+            intraday_candles, entry_timing, rsi_period, rsi_threshold,
+            bollinger_period, bollinger_std,
+        )
 
     # Mayer Multiple per simulated day, from a 200d SMA that spans the
     # warmup window too.
@@ -346,10 +526,11 @@ def run_backtest(
             and len(open_bullets) < max_bullets_per_round
         )
         if can_open:
+            entry_price = entry_price_by_date.get(date, open_price)
             entry_fee_btc = bullet_size * leverage * TAKER_FEE_RATE
             if balance - entry_fee_btc > 0:
                 balance -= entry_fee_btc
-                open_bullets.append({"entry_price": open_price, "collateral_btc": bullet_size})
+                open_bullets.append({"entry_price": entry_price, "collateral_btc": bullet_size})
                 last_open_date = date
                 if round_opened_at is None:
                     round_opened_at = date
@@ -407,6 +588,9 @@ def run_backtest(
         "derisk_mode": derisk_mode,
         "drawdown_lookback_days": drawdown_lookback_days,
         "drawdown_stop_pct": drawdown_stop_pct,
+        "entry_timing": entry_timing,
+        "rsi_threshold": rsi_threshold if entry_timing == "rsi_oversold" else None,
+        "bollinger_std": bollinger_std if entry_timing == "bollinger_lower" else None,
         "max_bullets_per_round": max_bullets_per_round,
         "initial_balance_btc": round(initial_balance_btc, 8),
         "trading_balance_btc": round(final_balance, 8),

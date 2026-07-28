@@ -61,7 +61,9 @@ src/
                              here rather than left for the LLM to infer.
   backtest.py             -> offline simulation of the bullet strategy against real
                              historical candles, coin-margined (see "Backtesting").
-                             Touches no account and no state.
+                             Also compares intraday ENTRY TIMING (fixed daily-open vs
+                             15m RSI-oversold vs an idealized day-low ceiling). Touches
+                             no account and no state.
   bingx_client.py         -> BingX access via ccxt, split into two clearly separated
                              halves: (1) DEMO/sandbox trading -- hard-coded, no code
                              path to your live account, can place orders (used only by
@@ -484,6 +486,70 @@ trailing high originally included the current day's high, which is not
 knowable at the daily open when the decision is made). The table above
 is post-fix.
 
+### Intraday entry timing (`backtest-timing`)
+
+The live bot buys its one daily bullet at whatever price BTC happens to
+be at right after midnight UTC — an arbitrary moment, not a chosen one.
+`python main.py backtest-timing` asks whether waiting for a better
+intraday price would help, holding everything else fixed (target=btc,
+de-risk=off) so only entry timing varies:
+
+- **`fixed`** — today's actual live behavior: buy at the daily open.
+- **`rsi_oversold<N`** — wait for 15-minute RSI to drop below N that day,
+  buy at that candle's close; if it never fires, buy at the day's last
+  close anyway (the one-bullet-per-day cadence is never skipped). This
+  is REALISTIC: it only uses information available at the moment of the
+  decision, same as the next one.
+- **`bollinger_lower<S>`** — same idea, different math: wait for price to
+  close below the lower Bollinger Band (20-period SMA minus S standard
+  deviations), a volatility-based signal instead of RSI's momentum-based
+  one. Same end-of-day fallback.
+- **`day_low`** — buys at the day's actual lowest price. NOT a real
+  strategy — only knowable in hindsight — included purely as an
+  idealized ceiling: the most any same-day timing approach could
+  possibly have captured.
+
+**The two cycles disagree, which is itself the finding:**
+
+| Cycle | fixed | RSI\<20 | RSI\<25 | RSI\<30 | RSI\<35 | Boll 1.5sd | Boll 2.0sd | Boll 2.5sd | day_low (ceiling) |
+|---|---|---|---|---|---|---|---|---|---|
+| 2020-10 → 2021-11 | **-100%** (liq) | **+583%** | +580% | +578% | -100% (liq) | -100% (liq) | -100% (liq) | -100% (liq) | +600% |
+| 2023-01 → 2023-12 | +219% | +198% | +198% | +164% | +219% | +198% | +197% | +197% | +436% |
+
+In 2020-2021, RSI timing at the tighter thresholds (20/25/30) avoided
+the exact liquidation that `fixed` suffered — worth understanding *why*,
+not just that it did: only buying on intraday dips pulls the round's
+*weighted average entry price* down, which pulls the liquidation price
+down with it, buying more room before the same crash reaches it. RSI<35
+barely filters anything (it triggers on almost any red candle), stayed
+close to `fixed`, and got liquidated too — consistent with that
+mechanism, not contradicting it.
+
+**The Bollinger result is the more interesting one: it did NOT avoid the
+same liquidation, at any of the three widths tried.** Two "oversold"
+signals, same crash, opposite outcomes. Volatility itself was rising
+sharply through that decline (the band was widening as fast as price was
+falling), so a band-based trigger stayed permissive when RSI — a bounded
+momentum oscillator, indifferent to how wide the recent range has become
+— did not. This is exactly why both were worth testing rather than
+picking one on reputation: "an oversold indicator" is not a
+interchangeable category, the specific mechanism determines whether the
+lower-average-entry effect actually shows up.
+
+In 2023, entry timing made close to no difference either way — every
+realistic variant landed within a few points of `fixed`. No crash to
+dodge that year, so all timing did was occasionally delay entries into a
+market that mostly went up anyway — a cost with little corresponding
+benefit, and no signal came out ahead of simply buying at the open.
+
+**Read this the same way as the drawdown table above: two cycles is not
+enough to call this settled.** The 2020-2021 result is a genuine,
+mechanistically-explained effect, not noise — but it's one liquidation
+event, avoided by one technique (RSI) and not another (Bollinger), in
+one crash. Whether either helps next time depends on whether there's a
+crash to avoid at all, and on which flavor of "oversold" happens to
+match how that particular crash unfolds.
+
 Documented simplifications (see `src/backtest.py`): liquidation is
 modeled as round equity hitting zero, which is *optimistic* — real
 exchanges liquidate earlier by holding maintenance margin. When a single
@@ -506,17 +572,23 @@ depend on reading momentum and market context, and they stay manual —
 informed by the daily report and the dashboard, decided by the user.
 
 Concretely, this means the de-risking work in `src/backtest.py`
-(`derisk_mode`: Mayer-based sizing, withdrawals, drawdown brake) is
-**backtesting-only, on purpose**. It exists to understand how the
+(`derisk_mode`: Mayer-based sizing, withdrawals, drawdown brake) AND the
+intraday entry-timing work (`entry_timing`: RSI-oversold, Bollinger
+lower band, day-low) are
+**backtesting-only, on purpose**. They exist to understand how the
 strategy behaves and what protects it, not to be wired into the live
-bot. Verified rather than assumed:
+bot -- the live bot decides WHETHER to buy (one bullet/day, mechanically),
+never WHEN within the day or HOW MUCH based on a read of the market.
+Verified rather than assumed:
 
 - `backtest.py` is imported in exactly two places: `main.py`'s
-  `cmd_backtest` (the manual CLI command) and its own test file. No live
-  code path reaches it.
-- `MAYER_FULL_SIZE`, `MAYER_STOP`, `DRAWDOWN_*`, `_size_factor()` and
-  `derisk_mode` appear nowhere in `bullets.py`, `bingx_client.py`, or the
-  `bullet-check` flow.
+  `cmd_backtest` / `cmd_backtest_timing` (the manual CLI commands) and
+  its own test file. No live code path reaches it.
+- `MAYER_FULL_SIZE`, `MAYER_STOP`, `DRAWDOWN_*`, `_size_factor()`,
+  `derisk_mode`, `entry_timing`, `_rsi_series()`,
+  `_bollinger_lower_series()` and `_entry_prices_by_day()` appear
+  nowhere in `bullets.py`, `bingx_client.py`, or the `bullet-check` flow
+  -- the live bot still only ever buys at the daily open.
 - `backtest.py` imports neither `state` nor `db` and never calls
   `create_order`, so it cannot write state or touch an exchange even by
   accident.

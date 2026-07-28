@@ -252,9 +252,11 @@ def _bullets_opened(result):
     return sum(r["bullets_used"] for r in result["rounds"])
 
 
-# An unreachable target keeps take-profits from ending rounds mid-test,
-# so these assertions isolate the brake's behavior and nothing else.
-NO_TP = 10_000.0
+# An unreachable-but-sane target keeps take-profits from ending rounds
+# mid-test. Must stay below leverage*100 (500 at 5x): _target_price_btc's
+# denominator is `leverage - target_gain_pct/100`, which goes negative
+# (and the "target" price with it) above that -- confirmed the hard way.
+NO_TP = 400.0
 
 
 def test_derisk_drawdown_stops_opening_while_price_is_off_its_high():
@@ -325,3 +327,187 @@ def test_invalid_target_mode_raises():
 def test_empty_candles_raises():
     with pytest.raises(ValueError):
         backtest.run_backtest("2023-01-01", "2023-01-10", candles=[])
+
+
+def test_invalid_entry_timing_raises():
+    with pytest.raises(ValueError):
+        backtest.run_backtest("2023-01-01", "2023-01-10",
+                              candles=_flat_candles(3, 100.0), entry_timing="whenever")
+
+
+# --- Intraday entry timing -----------------------------------------------
+
+FIFTEEN_MIN_MS = 15 * 60 * 1000
+
+
+def _intraday(day_index, slot, open_price, high, low, close):
+    ts = START_MS + day_index * DAY_MS + slot * FIFTEEN_MIN_MS
+    return [ts, open_price, high, low, close, 0.0]
+
+
+def test_rsi_series_all_gains_is_100():
+    closes = [100 + i for i in range(20)]
+    rsi = backtest._rsi_series(closes, period=5)
+    assert rsi[5] == 100.0
+    assert rsi[-1] == 100.0
+
+
+def test_rsi_series_all_losses_is_0():
+    closes = [100 - i for i in range(20)]
+    rsi = backtest._rsi_series(closes, period=5)
+    assert rsi[5] == 0.0
+    assert rsi[-1] == 0.0
+
+
+def test_rsi_series_none_before_enough_history():
+    closes = [100 + i for i in range(10)]
+    rsi = backtest._rsi_series(closes, period=14)
+    assert all(v is None for v in rsi)
+
+
+def test_entry_prices_day_low_picks_the_days_minimum():
+    candles = [
+        _intraday(0, 0, 100, 105, 98, 102),
+        _intraday(0, 1, 102, 103, 90, 95),   # new low: 90
+        _intraday(0, 2, 95, 96, 92, 94),
+    ]
+    prices = backtest._entry_prices_by_day(candles, "day_low", rsi_period=14, rsi_threshold=30)
+    assert prices["2023-01-01"] == 90
+
+
+def test_entry_prices_rsi_oversold_falls_back_to_last_close_when_never_triggered():
+    # Strictly rising all day -> RSI stays pinned high, signal never fires.
+    candles = [_intraday(0, i, 100 + i, 100 + i + 1, 100 + i - 1, 100 + i) for i in range(20)]
+    prices = backtest._entry_prices_by_day(candles, "rsi_oversold", rsi_period=14, rsi_threshold=30)
+    assert prices["2023-01-01"] == candles[-1][4]
+
+
+def test_entry_prices_rsi_oversold_triggers_mid_decline():
+    # A short flat warmup (to seed RSI) followed by a sharp decline should
+    # trigger the signal WHILE the decline is happening -- not at the
+    # day's open, and not by falling back to the day's last close.
+    closes = [100] * 6 + [99, 97, 94, 90, 86, 82, 78]
+    candles = [_intraday(0, i, c, c + 0.5, c - 0.5, c) for i, c in enumerate(closes)]
+    prices = backtest._entry_prices_by_day(candles, "rsi_oversold", rsi_period=5, rsi_threshold=30)
+    entry = prices["2023-01-01"]
+    assert entry < closes[0]
+    assert entry != closes[-1]
+
+
+def test_rolling_std_of_constant_series_is_zero():
+    std = backtest._rolling_std([100.0] * 10, period=5)
+    assert std[4] == 0.0
+    assert std[9] == 0.0
+
+
+def test_rolling_std_matches_hand_computation():
+    # [1,2,3,4,5]: mean=3, population variance=2, std=sqrt(2)
+    std = backtest._rolling_std([1.0, 2.0, 3.0, 4.0, 5.0], period=5)
+    assert std[4] == pytest.approx(2 ** 0.5)
+
+
+def test_bollinger_lower_band_below_sma_when_volatile():
+    closes = [100.0, 110.0, 90.0, 105.0, 95.0, 100.0]
+    band = backtest._bollinger_lower_series(closes, period=5, num_std=2.0)
+    sma = backtest._rolling_sma(closes, period=5)
+    assert band[4] < sma[4]
+
+
+def test_bollinger_lower_band_equals_sma_when_flat():
+    band = backtest._bollinger_lower_series([100.0] * 10, period=5, num_std=2.0)
+    assert band[4] == 100.0  # zero volatility -> band collapses onto the mean
+
+
+def test_entry_prices_bollinger_triggers_on_a_volatility_spike():
+    # Flat warmup (band hugs the mean at ~100), then a sharp one-candle
+    # drop clearly below the lower band -- should trigger THAT candle's
+    # close, not fall back to the day's last close.
+    closes = [100.0] * 10 + [80.0, 90.0, 95.0]
+    candles = [_intraday(0, i, c, c + 0.5, c - 0.5, c) for i, c in enumerate(closes)]
+    prices = backtest._entry_prices_by_day(
+        candles, "bollinger_lower", bollinger_period=10, bollinger_std=2.0,
+    )
+    entry = prices["2023-01-01"]
+    assert entry == 80.0
+
+
+def test_entry_prices_bollinger_falls_back_when_never_triggered():
+    closes = [100.0 + i * 0.01 for i in range(15)]  # near-flat, tiny drift
+    candles = [_intraday(0, i, c, c + 0.05, c - 0.05, c) for i, c in enumerate(closes)]
+    prices = backtest._entry_prices_by_day(
+        candles, "bollinger_lower", bollinger_period=10, bollinger_std=2.0,
+    )
+    assert prices["2023-01-01"] == candles[-1][4]
+
+
+def test_run_backtest_accepts_bollinger_lower_entry_timing():
+    daily = [_candle(0, 100.0, 100.0, 100.0, 100.0)]
+    intraday = [_intraday(0, i, 100.0, 100.5, 99.5, 100.0) for i in range(10)]
+    intraday.append(_intraday(0, 10, 100.0, 100.5, 70.0, 75.0))  # sharp drop
+    result = backtest.run_backtest(
+        "2023-01-01", "2023-01-01", initial_balance_btc=1.0,
+        candles=daily, entry_timing="bollinger_lower", intraday_candles=intraday,
+        bollinger_period=10, target_gain_pct=NO_TP, derisk_mode="off",
+    )
+    assert result["rounds"][0]["bullets_used"] == 1
+    assert result["entry_timing"] == "bollinger_lower"
+
+
+def test_entry_prices_split_correctly_across_multiple_days():
+    candles = [
+        _intraday(0, 0, 100, 100, 90, 95),
+        _intraday(1, 0, 200, 200, 150, 180),
+    ]
+    prices = backtest._entry_prices_by_day(candles, "day_low", rsi_period=14, rsi_threshold=30)
+    assert prices["2023-01-01"] == 90
+    assert prices["2023-01-02"] == 150
+
+
+def test_run_backtest_day_low_entry_beats_fixed_open_entry():
+    # Outer daily view is flat (isolates the entry-price mechanism from
+    # liquidation/target checks, which use the daily candle separately).
+    # Real intraday movement -- a dip to 80 -- only exists in the 15m data.
+    daily = [_candle(0, 100.0, 100.0, 100.0, 100.0)]
+    intraday = [
+        _intraday(0, 0, 100, 100, 100, 100),
+        _intraday(0, 1, 100, 100, 80, 85),
+        _intraday(0, 2, 85, 90, 85, 90),
+    ]
+    fixed = backtest.run_backtest(
+        "2023-01-01", "2023-01-01", initial_balance_btc=1.0,
+        candles=daily, entry_timing="fixed", target_gain_pct=NO_TP, derisk_mode="off",
+    )
+    day_low = backtest.run_backtest(
+        "2023-01-01", "2023-01-01", initial_balance_btc=1.0,
+        candles=daily, entry_timing="day_low", intraday_candles=intraday,
+        target_gain_pct=NO_TP, derisk_mode="off",
+    )
+    # Same reference close (100) for both -- day_low bought lower (80 vs
+    # 100), so it must show strictly better P&L.
+    assert day_low["rounds"][0]["end_balance_btc"] > fixed["rounds"][0]["end_balance_btc"]
+
+
+def test_run_backtest_day_without_intraday_coverage_falls_back_to_daily_open():
+    # Two simulated days; intraday data only covers the first. The second
+    # day's bullet must still open (at the daily open) instead of the
+    # missing-coverage gap silently dropping that day's bullet.
+    daily = [
+        _candle(0, 100.0, 100.0, 100.0, 100.0),
+        _candle(1, 200.0, 200.0, 200.0, 200.0),
+    ]
+    intraday = [_intraday(0, 0, 100, 100, 90, 95)]  # day 2 has no coverage
+    result = backtest.run_backtest(
+        "2023-01-01", "2023-01-02", initial_balance_btc=1.0,
+        candles=daily, entry_timing="day_low", intraday_candles=intraday,
+        target_gain_pct=NO_TP, derisk_mode="off",
+    )
+    assert sum(r["bullets_used"] for r in result["rounds"]) == 2
+
+
+def test_run_backtest_raises_if_no_intraday_data_at_all():
+    daily = [_candle(0, 100.0, 100.0, 100.0, 100.0)]
+    with pytest.raises(ValueError):
+        backtest.run_backtest(
+            "2023-01-01", "2023-01-01", initial_balance_btc=1.0,
+            candles=daily, entry_timing="day_low", intraday_candles=[],
+        )
