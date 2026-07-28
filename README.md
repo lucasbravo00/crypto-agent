@@ -27,9 +27,11 @@ strategy this project supports, BTC only, runs as two parallel legs:
    round has its own fresh 30-bullet budget (`MAX_BULLETS_PER_ROUND`) —
    this resets every round, it is not a lifetime cap. Bullet size
    auto-computes as `(BingX balance / 30)` at the start of each round, so
-   a profitable round compounds into bigger bullets next round. Real
-   money starts here in roughly 3 months; until then this runs entirely
-   on demo/virtual funds to prove the strategy and the code out.
+   a profitable round compounds into bigger bullets next round. WHEN
+   within the day a bullet opens is timed by live 15-minute RSI (waits
+   for oversold, falls back to end-of-day) — see "Intraday entry timing".
+   Real money starts here in roughly 3 months; until then this runs
+   entirely on demo/virtual funds to prove the strategy and the code out.
 
 ## Architecture
 
@@ -252,6 +254,10 @@ Python projects on the same machine if installed globally.
   `bullet-check`'s sync/reconcile/auto-trade) and the real, read-only DCA
   sync (`dca-sync`). Bullet auto-trading additionally requires
   `BINGX_AUTO_TRADE_ENABLED=true` (off by default).
+- **RSI entry timing (optional)**: `RSI_ENTRY_THRESHOLD` (default 25)
+  controls how oversold live 15m RSI must get before `auto_trade()` opens
+  the day's bullet — see `bullets.RSI_ENTRY_*` and "Intraday entry
+  timing" below.
 
 ## Usage
 
@@ -488,18 +494,22 @@ is post-fix.
 
 ### Intraday entry timing (`backtest-timing`)
 
-The live bot buys its one daily bullet at whatever price BTC happens to
-be at right after midnight UTC — an arbitrary moment, not a chosen one.
-`python main.py backtest-timing` asks whether waiting for a better
-intraday price would help, holding everything else fixed (target=btc,
-de-risk=off) so only entry timing varies:
+Until 2026-07-28 the live bot bought its one daily bullet at whatever
+price BTC happened to be right after midnight UTC — an arbitrary moment,
+not a chosen one. `python main.py backtest-timing` was built to ask
+whether waiting for a better intraday price would help, holding
+everything else fixed (target=btc, de-risk=off) so only entry timing
+varies. `rsi_oversold` came out ahead (see the results below) and is now
+what `auto_trade()` actually does live — this section is both the
+backtest tool's docs and the record of why that choice was made.
 
-- **`fixed`** — today's actual live behavior: buy at the daily open.
-- **`rsi_oversold<N`** — wait for 15-minute RSI to drop below N that day,
-  buy at that candle's close; if it never fires, buy at the day's last
-  close anyway (the one-bullet-per-day cadence is never skipped). This
-  is REALISTIC: it only uses information available at the moment of the
-  decision, same as the next one.
+- **`fixed`** — the OLD live behavior, kept as the baseline everything
+  else is measured against: buy at the daily open.
+- **`rsi_oversold<N`** — the CURRENT live behavior: wait for 15-minute
+  RSI to drop below N that day, buy at that candle's close; if it never
+  fires, buy at the day's last close anyway (the one-bullet-per-day
+  cadence is never skipped). REALISTIC: only uses information available
+  at the moment of the decision, same as the next one.
 - **`bollinger_lower<S>`** — same idea, different math: wait for price to
   close below the lower Bollinger Band (20-period SMA minus S standard
   deviations), a volatility-based signal instead of RSI's momentum-based
@@ -550,6 +560,34 @@ one crash. Whether either helps next time depends on whether there's a
 crash to avoid at all, and on which flavor of "oversold" happens to
 match how that particular crash unfolds.
 
+### Which candle size for the RSI? (`backtest-rsi-timeframe`)
+
+A follow-up question once RSI was chosen: what timeframe should it be
+computed on? `python main.py backtest-rsi-timeframe` fetches 5-minute
+candles once and builds every other size by aggregating them (Binance
+has no native 10m/45m interval), holding the threshold fixed at 25 so
+only candle size varies:
+
+| Timeframe | 2020-2021 | 2023 |
+|---|---|---|
+| 5m | **-100% (liquidated)** | +195.9% |
+| 10m | +579.1% | +182.7% |
+| 15m | +578.8% | +197.4% |
+| 20m | +583.4% | +218.9% |
+| 30m | +584.9% | +220.4% |
+| 45m | +585.9% | +198.6% |
+| 60m | +586.4% | +221.0% |
+
+**5m is the one to avoid, clearly — not a matter of degree.** RSI on
+candles that short is too noisy to filter anything: it crosses below 25
+on ordinary micro-fluctuations, so it ends up firing almost as readily
+as `fixed` does, and it got liquidated in the exact same crash `fixed`
+did. Everything from 10m to 60m landed in a flat, tightly-clustered
+plateau (±8 points of BTC return in each cycle) — no candle size in that
+range stood out enough to prefer on this evidence. Live entry timing
+uses **1h**, the top of that plateau, picked as a reasonable default
+rather than a measured winner.
+
 Documented simplifications (see `src/backtest.py`): liquidation is
 modeled as round equity hitting zero, which is *optimistic* — real
 exchanges liquidate earlier by holding maintenance margin. When a single
@@ -559,62 +597,74 @@ real 0.05% taker fee is.
 
 ## Division of labour: what the bot decides, and what it must not
 
-An explicit design boundary, decided 2026-07-27, not an open question:
+An explicit design boundary, decided 2026-07-27, refined 2026-07-28:
 
-**The bot owns the mechanical part.** Opening one bullet per calendar
-day, sized at `balance / 30`, at 5x, in cross margin — and closing the
-round when the combined target is reached. That is a rule, not a
-judgment call, so it is safe to automate.
+**The bot owns the mechanical part.** *Whether* to open a bullet (one per
+calendar day, sized at `balance / 30`, at 5x, in cross margin) and
+*when within the day* to time that entry, plus closing the round when
+the combined target is reached. Both are well-defined rules, not
+judgment calls, so both are safe to automate.
 
-**The human owns the strategy's arc.** When to scale down, when to stop
-opening, when a cycle is running out of room, when to walk away. Those
-depend on reading momentum and market context, and they stay manual —
-informed by the daily report and the dashboard, decided by the user.
+**The human owns the strategy's arc.** *How much* to expose as the cycle
+matures — when to scale down, when to stop opening altogether, when to
+pull profit out, when to walk away. Those depend on reading momentum and
+market context, a judgment call, and stay manual — informed by the daily
+report and the dashboard, decided by the user.
 
-Concretely, this means the de-risking work in `src/backtest.py`
-(`derisk_mode`: Mayer-based sizing, withdrawals, drawdown brake) AND the
-intraday entry-timing work (`entry_timing`: RSI-oversold, Bollinger
-lower band, day-low) are
-**backtesting-only, on purpose**. They exist to understand how the
-strategy behaves and what protects it, not to be wired into the live
-bot -- the live bot decides WHETHER to buy (one bullet/day, mechanically),
-never WHEN within the day or HOW MUCH based on a read of the market.
-Verified rather than assumed:
+Concretely:
 
-- `backtest.py` is imported in exactly two places: `main.py`'s
-  `cmd_backtest` / `cmd_backtest_timing` (the manual CLI commands) and
-  its own test file. No live code path reaches it.
-- `MAYER_FULL_SIZE`, `MAYER_STOP`, `DRAWDOWN_*`, `_size_factor()`,
-  `derisk_mode`, `entry_timing`, `_rsi_series()`,
-  `_bollinger_lower_series()` and `_entry_prices_by_day()` appear
-  nowhere in `bullets.py`, `bingx_client.py`, or the `bullet-check` flow
-  -- the live bot still only ever buys at the daily open.
-- `backtest.py` imports neither `state` nor `db` and never calls
+- **Entry timing is LIVE** (since 2026-07-28): `bullets.auto_trade()`
+  waits for live RSI(14) on `RSI_ENTRY_TIMEFRAME` candles (1h) to drop
+  below `RSI_ENTRY_THRESHOLD` (env var, default 25) before opening the
+  day's bullet, falling back to opening anyway at 23:45 UTC if the
+  signal never fires that day — see `market_data.get_intraday_rsi()` and
+  `bullets.RSI_ENTRY_*`. Backtested first against both bull cycles
+  (`backtest-timing`, then `backtest-rsi-timeframe` for the candle size
+  itself — 5m turned out badly broken, too noisy to filter anything;
+  everything 10m-60m landed in a flat, statistically-indistinguishable
+  plateau, and 1h was picked as the top of that safe range) before going
+  live: see "Intraday entry timing"
+  below for the comparison, including the honest caveat about how thin
+  that evidence actually is (one real liquidation event survived).
+- **Position sizing / de-risking stays BACKTESTING-ONLY, on purpose.**
+  `src/backtest.py`'s `derisk_mode` (Mayer-based sizing, withdrawals,
+  drawdown brake) decides *how much* exposure to carry as a cycle
+  matures — that is the judgment call that stays with the human, not
+  the bot. Verified rather than assumed: `MAYER_FULL_SIZE`, `MAYER_STOP`,
+  `DRAWDOWN_*`, `_size_factor()` and `derisk_mode` appear nowhere in
+  `bullets.py`, `bingx_client.py`, or the `bullet-check` flow.
+  `backtest.py` imports neither `state` nor `db` and never calls
   `create_order`, so it cannot write state or touch an exchange even by
   accident.
 
 If automated de-risking is ever wanted, it must be a deliberate,
-separately-requested feature — never something that quietly grows out of
-the backtester. The same rule that governs demo-vs-live trading.
+separately-requested feature — the same way entry timing became one, not
+something that quietly grows out of the backtester.
 
 ## Roadmap
 
-1. **Live-verify the auto-close path**: `auto_trade()`'s branch that
+1. **Watch how live RSI entry timing actually performs**: it's only been
+   live since 2026-07-28, backed by real but thin backtest evidence (one
+   real liquidation event survived, out of a sample of two bull cycles —
+   see "Intraday entry timing"). Worth tracking on the demo account
+   before trusting it, and revisiting `RSI_ENTRY_THRESHOLD` if live
+   behavior diverges from what the backtest suggested.
+2. **Live-verify the auto-close path**: `auto_trade()`'s branch that
    closes a round when the combined +15% target is actually reached in a
    real, automatic `bullet-check` cycle has only been unit-tested and
    manually invoked once (an emergency cleanup) — worth watching for
    naturally or testing deliberately.
-2. **Cross-margin liquidation display**: `strategy_tools.simulate_bullet_math()`
+3. **Cross-margin liquidation display**: `strategy_tools.simulate_bullet_math()`
    still reports a per-bullet `approx_liquidation_price` using isolated,
    USDT-margined math. Under cross margin with BTC collateral the real
    liquidation point is a function of the whole round vs. account equity
    (the backtest already models this correctly; the live display does not).
-3. **Surface backtest context in the daily report**: the human makes the
+4. **Surface backtest context in the daily report**: the human makes the
    de-risking calls, so the report is where that judgment gets informed —
    e.g. showing how deep the current round is into its 30-bullet budget
    and how far price sits below its recent highs. Data for a decision,
    never the decision itself.
-4. **Telegram bidirectional bot**: respond to commands from the chat
+5. **Telegram bidirectional bot**: respond to commands from the chat
    (e.g. `/bullet-open`) talking directly to Supabase, same pattern as
    the dashboard.
 
@@ -622,7 +672,8 @@ Done: BingX demo auto-trading, DCA auto-sync from real BingX trades,
 round-based bullet accounting, reconciliation hardening, auto-trade
 notifications, real exchange fees in P&L, the web dashboard (including
 market-cycle charts), report memory (1/7/30-day trend context),
-Predictive Ranges, and the coin-margined backtester.
+Predictive Ranges, the coin-margined backtester, and live RSI-timed
+bullet entries.
 
 ## Disclaimer
 

@@ -399,20 +399,61 @@ def test_auto_trade_noop_when_bingx_not_configured(monkeypatch):
     assert "BingX not configured" in result["reason"]
 
 
-def test_auto_trade_opens_when_flag_enabled_and_nothing_open_today(monkeypatch):
+def test_auto_trade_opens_when_rsi_signal_fired(monkeypatch):
     monkeypatch.setenv("BINGX_AUTO_TRADE_ENABLED", "true")
-    from src import bingx_client
+    from src import bingx_client, market_data
     monkeypatch.setattr(bingx_client, "is_enabled", lambda: True)
     monkeypatch.setattr(bingx_client, "get_balance",
                          lambda **kw: {"asset": "VST", "free": 30000, "used": 0, "total": 30000})
     monkeypatch.setattr(bingx_client, "open_long_position",
                          lambda collateral_usd, leverage=5.0, test=False, **kw:
                          {"id": "fake-order-1", "collateral_usd": collateral_usd, "leverage": leverage, "test": test})
+    monkeypatch.setattr(market_data, "get_intraday_rsi", lambda *a, **kw: bullets.RSI_ENTRY_THRESHOLD - 1)
 
     result = bullets.auto_trade()
     assert result["traded"] is True
     assert result["action"] == "open"
+    assert result["triggered_by"] == "rsi_oversold"
     assert result["order"]["leverage"] == bullets.AUTO_TRADE_LEVERAGE  # forced to 5x, not whatever the account has
+
+
+def test_auto_trade_waits_when_rsi_not_oversold_and_before_cutoff(monkeypatch):
+    monkeypatch.setenv("BINGX_AUTO_TRADE_ENABLED", "true")
+    from src import bingx_client, market_data
+    monkeypatch.setattr(bingx_client, "is_enabled", lambda: True)
+    monkeypatch.setattr(market_data, "get_intraday_rsi", lambda *a, **kw: bullets.RSI_ENTRY_THRESHOLD + 20)
+    monkeypatch.setattr(bullets, "_past_rsi_fallback_cutoff", lambda *a, **kw: False)
+
+    result = bullets.auto_trade()
+    assert result["traded"] is False
+    assert f"RSI({bullets.RSI_ENTRY_PERIOD})<{bullets.RSI_ENTRY_THRESHOLD}" in result["reason"]
+
+
+def test_auto_trade_opens_at_eod_fallback_even_without_rsi_signal(monkeypatch):
+    monkeypatch.setenv("BINGX_AUTO_TRADE_ENABLED", "true")
+    from src import bingx_client, market_data
+    monkeypatch.setattr(bingx_client, "is_enabled", lambda: True)
+    monkeypatch.setattr(bingx_client, "get_balance",
+                         lambda **kw: {"asset": "VST", "free": 30000, "used": 0, "total": 30000})
+    monkeypatch.setattr(bingx_client, "open_long_position",
+                         lambda collateral_usd, leverage=5.0, test=False, **kw:
+                         {"id": "fake-order-1", "collateral_usd": collateral_usd, "leverage": leverage, "test": test})
+    monkeypatch.setattr(market_data, "get_intraday_rsi", lambda *a, **kw: bullets.RSI_ENTRY_THRESHOLD + 20)
+    monkeypatch.setattr(bullets, "_past_rsi_fallback_cutoff", lambda *a, **kw: True)
+
+    result = bullets.auto_trade()
+    assert result["traded"] is True
+    assert result["triggered_by"] == "eod_fallback"
+
+
+def test_past_rsi_fallback_cutoff():
+    from datetime import datetime, timezone
+    before = datetime(2026, 1, 1, 23, 44, tzinfo=timezone.utc)
+    at_cutoff = datetime(2026, 1, 1, 23, 45, tzinfo=timezone.utc)
+    after = datetime(2026, 1, 1, 23, 59, tzinfo=timezone.utc)
+    assert bullets._past_rsi_fallback_cutoff(before) is False
+    assert bullets._past_rsi_fallback_cutoff(at_cutoff) is True
+    assert bullets._past_rsi_fallback_cutoff(after) is True
 
 
 def test_auto_trade_closes_when_combined_target_reached(monkeypatch):

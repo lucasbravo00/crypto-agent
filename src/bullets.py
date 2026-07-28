@@ -65,6 +65,33 @@ from .strategy_tools import simulate_bullet_math
 # leverage the BingX account happens to be set to manually.
 AUTO_TRADE_LEVERAGE = 5.0
 
+# Intraday entry timing for auto_trade()'s open branch, evaluated live
+# via market_data.get_intraday_rsi(). Backtested in src/backtest.py
+# against BTC's 2020-2021 and 2023 bull cycles before going live here
+# (2026-07-28): RSI<20 and RSI<25 both avoided the one real liquidation
+# event found in that history (the May-2021 crash) with a defensible
+# mechanism (buying dips lowers the round's weighted average entry,
+# which lowers its liquidation price too) -- see the README's
+# "Intraday entry timing" section for the full comparison, including
+# where this DIDN'T help (a quiet year with no crash to dodge).
+# Configurable without a code change while this is still being evaluated
+# live on the demo account.
+RSI_ENTRY_THRESHOLD = float(os.environ.get("RSI_ENTRY_THRESHOLD", "25"))
+RSI_ENTRY_PERIOD = 14
+# Candle size the RSI is computed on. backtest-rsi-timeframe (2026-07-28)
+# found 5m badly broken (RSI too noisy to filter anything -- it got
+# liquidated in the same crash 10m-60m all avoided) and everything from
+# 10m to 60m landing in a flat, statistically-indistinguishable plateau.
+# 1h picked as the top of that safe plateau, not because it measurably
+# beat the others.
+RSI_ENTRY_TIMEFRAME = "1h"
+# If the RSI signal never fires by this time (UTC), open anyway -- the
+# one-new-bullet-per-day cadence the rest of the strategy assumes must
+# never silently skip a day. bullet-check runs every 15 min, so 23:45
+# leaves it one last try before midnight.
+RSI_ENTRY_FALLBACK_HOUR_UTC = 23
+RSI_ENTRY_FALLBACK_MINUTE_UTC = 45
+
 # Business rules enforced in code, not left as conventions to remember.
 MAX_BULLETS_PER_ROUND = 30  # per round, NOT a lifetime total -- resets every round
 DEFAULT_TARGET_GAIN_PCT = 15.0  # combined target for the currently-open round
@@ -81,6 +108,13 @@ LIQUIDATION_PROXIMITY_PCT = 5.0
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _past_rsi_fallback_cutoff(now: datetime | None = None) -> bool:
+    """True once it's late enough (UTC) that auto_trade() should stop
+    waiting for the RSI signal and open today's bullet regardless."""
+    now = now or datetime.now(timezone.utc)
+    return (now.hour, now.minute) >= (RSI_ENTRY_FALLBACK_HOUR_UTC, RSI_ENTRY_FALLBACK_MINUTE_UTC)
 
 
 def _parse_date(iso_string: str):
@@ -688,7 +722,13 @@ def auto_trade(test: bool = False) -> dict:
     """Place REAL orders on your BingX Demo Trading account to keep the
     strategy on schedule, with NO human typing a command:
     - Opens today's bullet (auto-sized, forced to AUTO_TRADE_LEVERAGE) if
-      one hasn't been opened yet today and this round isn't at its cap.
+      one hasn't been opened yet today and this round isn't at its cap --
+      but only once live RSI(RSI_ENTRY_PERIOD) on RSI_ENTRY_TIMEFRAME candles drops below
+      RSI_ENTRY_THRESHOLD, or RSI_ENTRY_FALLBACK_HOUR_UTC:MINUTE is
+      reached with no signal that day, whichever comes first. Called
+      every 15 min by bullet-check, so this effectively polls for the
+      signal all day. See RSI_ENTRY_* above for the backtest this was
+      based on. Live since 2026-07-28.
     - Closes ALL active bullets together (ending the round) if the
       combined gain has reached the round's target.
 
@@ -727,8 +767,25 @@ def auto_trade(test: bool = False) -> dict:
             return {"traded": True, "action": "close", "order": order}
 
     if not _opened_today(bullets) and len(active) < MAX_BULLETS_PER_ROUND:
-        collateral_usd = _auto_collateral_usd(active)
-        order = bingx_client.open_long_position(collateral_usd, leverage=AUTO_TRADE_LEVERAGE, test=test)
-        return {"traded": True, "action": "open", "order": order}
+        from . import market_data
+        rsi = market_data.get_intraday_rsi(
+            "BTC/USDT", timeframe=RSI_ENTRY_TIMEFRAME, period=RSI_ENTRY_PERIOD,
+        )
+        signal_fired = rsi is not None and rsi < RSI_ENTRY_THRESHOLD
+        past_cutoff = _past_rsi_fallback_cutoff()
+
+        if signal_fired or past_cutoff:
+            collateral_usd = _auto_collateral_usd(active)
+            order = bingx_client.open_long_position(collateral_usd, leverage=AUTO_TRADE_LEVERAGE, test=test)
+            return {
+                "traded": True, "action": "open", "order": order, "rsi": rsi,
+                "triggered_by": "rsi_oversold" if signal_fired else "eod_fallback",
+            }
+        return {
+            "traded": False,
+            "reason": f"waiting for RSI({RSI_ENTRY_PERIOD})<{RSI_ENTRY_THRESHOLD} "
+                      f"(currently {rsi}); will fall back to opening anyway at "
+                      f"{RSI_ENTRY_FALLBACK_HOUR_UTC:02d}:{RSI_ENTRY_FALLBACK_MINUTE_UTC:02d} UTC",
+        }
 
     return {"traded": False, "reason": "nothing to do this cycle"}

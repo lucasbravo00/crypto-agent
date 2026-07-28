@@ -106,6 +106,36 @@ def fetch_intraday_candles(start_date: str, end_date: str, symbol: str = "BTC/US
     return _fetch_paginated(start_date, end_date, symbol, timeframe, step_ms)
 
 
+def _resample_ohlcv(candles: list, factor: int) -> list:
+    """Aggregate every `factor` consecutive candles into one synthetic
+    coarser candle (e.g. 5m candles with factor=2 -> 10m candles).
+    Binance has no native 10m/45m interval, so this is how
+    RSI_TIMEFRAME_MINUTES values that aren't natively available get
+    built, from 5m as the common base. Assumes `candles` are contiguous
+    and gapless (true for anything fetch_intraday_candles returns)."""
+    resampled = []
+    for i in range(0, len(candles) - factor + 1, factor):
+        group = candles[i:i + factor]
+        resampled.append([
+            group[0][0],                # open time of the first candle in the group
+            group[0][1],                # open
+            max(c[2] for c in group),   # high
+            min(c[3] for c in group),   # low
+            group[-1][4],               # close
+            sum(c[5] for c in group),   # volume
+        ])
+    return resampled
+
+
+def candles_at_timeframe(base_5m_candles: list, minutes: int) -> list:
+    """5m candles resampled to any multiple of 5 minutes. minutes=5
+    returns the input unchanged (no native Binance interval needed)."""
+    if minutes % 5 != 0 or minutes <= 0:
+        raise ValueError("minutes must be a positive multiple of 5")
+    factor = minutes // 5
+    return base_5m_candles if factor == 1 else _resample_ohlcv(base_5m_candles, factor)
+
+
 def _fetch_paginated(start_date: str, end_date: str, symbol: str, timeframe: str,
                       step_ms: int) -> list:
     exchange = ccxt.binance({"enableRateLimit": True})

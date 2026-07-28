@@ -511,3 +511,59 @@ def test_run_backtest_raises_if_no_intraday_data_at_all():
             "2023-01-01", "2023-01-01", initial_balance_btc=1.0,
             candles=daily, entry_timing="day_low", intraday_candles=[],
         )
+
+
+# --- RSI timeframe resampling ---------------------------------------------
+
+FIVE_MIN_MS = 5 * 60 * 1000
+
+
+def _five_min(slot, open_price, high, low, close, volume=1.0):
+    return [START_MS + slot * FIVE_MIN_MS, open_price, high, low, close, volume]
+
+
+def test_resample_ohlcv_aggregates_ohlc_correctly():
+    # Three 5m candles -> one 15m candle: open of the first, close of the
+    # last, high/low across all three, volume summed.
+    candles = [
+        _five_min(0, 100, 105, 98, 102, volume=10),
+        _five_min(1, 102, 110, 101, 108, volume=20),
+        _five_min(2, 108, 109, 95, 103, volume=5),
+    ]
+    resampled = backtest._resample_ohlcv(candles, factor=3)
+    assert len(resampled) == 1
+    ts, o, h, l, c, v = resampled[0]
+    assert ts == candles[0][0]
+    assert o == 100
+    assert h == 110
+    assert l == 95
+    assert c == 103
+    assert v == 35
+
+
+def test_resample_ohlcv_drops_incomplete_trailing_group():
+    # 7 candles with factor=3 -> only 2 full groups (6 candles); the
+    # trailing partial group is dropped rather than emitting a short candle.
+    candles = [_five_min(i, 100, 100, 100, 100) for i in range(7)]
+    resampled = backtest._resample_ohlcv(candles, factor=3)
+    assert len(resampled) == 2
+
+
+def test_candles_at_timeframe_5m_is_a_passthrough():
+    candles = [_five_min(i, 100, 100, 100, 100) for i in range(4)]
+    assert backtest.candles_at_timeframe(candles, 5) == candles
+
+
+def test_candles_at_timeframe_builds_10m_and_45m_from_5m_base():
+    candles = [_five_min(i, 100, 100 + i, 100 - i, 100) for i in range(18)]
+    tenm = backtest.candles_at_timeframe(candles, 10)
+    fortyfivem = backtest.candles_at_timeframe(candles, 45)
+    assert len(tenm) == 9    # 18 / 2
+    assert len(fortyfivem) == 2   # 18 / 9
+
+
+def test_candles_at_timeframe_rejects_non_multiple_of_5():
+    with pytest.raises(ValueError):
+        backtest.candles_at_timeframe([], 7)
+    with pytest.raises(ValueError):
+        backtest.candles_at_timeframe([], 0)

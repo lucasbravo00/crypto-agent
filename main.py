@@ -551,6 +551,59 @@ def cmd_backtest_timing(args: list[str]):
     print("it shows the most any same-day timing approach could possibly capture.")
 
 
+def cmd_backtest_rsi_timeframe(args: list[str]):
+    if len(args) < 2:
+        print("Usage: python main.py backtest-rsi-timeframe START_DATE END_DATE [BALANCE_BTC] [THRESHOLD]")
+        print("  e.g. python main.py backtest-rsi-timeframe 2023-01-01 2023-12-31 1.0 25")
+        print("\nCompares which candle timeframe the live RSI entry-timing signal")
+        print("should watch: 5/10/15/20/30/45/60 minutes, holding the RSI threshold")
+        print("fixed (default 25, matching what's live) so only timeframe varies.")
+        print("\nFetches 5-minute candles once and builds the other timeframes by")
+        print("aggregating them (Binance has no native 10m/45m interval) -- this is")
+        print("the heaviest backtest command; expect it to take a few minutes.")
+        sys.exit(1)
+    from src import backtest
+    start_date, end_date = args[0], args[1]
+    positional = [a for a in args[2:] if not a.startswith("--")]
+    initial_btc = float(positional[0]) if len(positional) >= 1 else 1.0
+    threshold = float(positional[1]) if len(positional) >= 2 else 25.0
+
+    print(f"Fetching daily candles {start_date}..{end_date} from Binance...")
+    daily = backtest.fetch_daily_candles(start_date, end_date)
+    print(f"Fetching 5m candles {start_date}..{end_date} from Binance "
+          f"(the slow part -- this is the finest granularity, everything else "
+          f"is built from it)...")
+    base_5m = backtest.fetch_intraday_candles(start_date, end_date, timeframe="5m")
+
+    timeframes = [5, 10, 15, 20, 30, 45, 60]
+    results = []
+    for minutes in timeframes:
+        intraday = backtest.candles_at_timeframe(base_5m, minutes)
+        result = backtest.run_backtest(
+            start_date, end_date, initial_balance_btc=initial_btc,
+            target_mode="btc", derisk_mode="off", entry_timing="rsi_oversold",
+            rsi_threshold=threshold, candles=daily, intraday_candles=intraday,
+        )
+        result["_minutes"] = minutes
+        results.append(result)
+
+    head = results[0]
+    print(f"\n=== RSI timeframe {head['start_date']} -> {head['end_date']} "
+          f"({head['days_simulated']} days) ===")
+    print(f"Start: {initial_btc} BTC   |   RSI threshold: <{threshold}   |   target=btc, de-risk=off\n")
+
+    print(f"{'timeframe':<11} {'FINAL BTC':>11} {'BTC ret':>9} {'end USD':>12} {'TP':>4} {'liq':>4}")
+    print("-" * 55)
+    for r in results:
+        print(f"{r['_minutes']:>3}m       {r['final_balance_btc']:>11.5f} {r['btc_return_pct']:>8.1f}% "
+              f"${r['final_value_usd']:>11,.0f} {r['rounds_take_profit']:>4} {r['rounds_liquidated']:>4}")
+
+    best = max(results, key=lambda r: r["final_balance_btc"])
+    print(f"\nBest: {best['_minutes']}m ({best['final_balance_btc']:.5f} BTC, "
+          f"{best['btc_return_pct']:+.1f}%)")
+    print("Currently live: 15m (RSI_ENTRY_PERIOD=14 in src/bullets.py).")
+
+
 def cmd_bingx_auto_trade(args: list[str]):
     from src import bullets
     test = "--test" in args
@@ -601,6 +654,8 @@ if __name__ == "__main__":
         cmd_backtest(rest)
     elif cmd == "backtest-timing":
         cmd_backtest_timing(rest)
+    elif cmd == "backtest-rsi-timeframe":
+        cmd_backtest_rsi_timeframe(rest)
     elif cmd == "bingx-auto-trade":
         cmd_bingx_auto_trade(rest)
     else:

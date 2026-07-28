@@ -111,6 +111,18 @@ def get_indicators(symbol: str = "BTC/USDT", timeframe: str = "1d") -> dict:
     }
 
 
+def get_intraday_rsi(symbol: str = "BTC/USDT", timeframe: str = "15m", period: int = 14) -> Optional[float]:
+    """Current RSI on `timeframe` candles (default 15m) -- used by
+    bullets.auto_trade() to time WHEN in the day it opens a bullet, not
+    just whether to. A rolling calculation over recent candles (not reset
+    at midnight), matching backtest.py's _rsi_series() and how a chart
+    would actually show it -- see bullets.py's RSI_ENTRY_* constants for
+    the decision this feeds."""
+    candles = get_ohlcv(symbol, timeframe=timeframe, limit=100)
+    closes = [c[4] for c in candles]
+    return _rsi(closes, period)
+
+
 def get_cycle_metrics(symbol: str = "BTC/USDT") -> dict:
     """Objective cycle-position metrics, useful for an accumulation
     strategy during a bear market. They do not predict the bottom: they
