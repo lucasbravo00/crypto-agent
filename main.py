@@ -115,7 +115,12 @@ def cmd_report():
     symbol = os.environ.get("SYMBOL", "BTC/USDT")
     agent_module = _get_agent_module()
     text = agent_module.run_daily_report(symbol=symbol)
-    notify.notify(text, subject_prefix=f"Report {symbol}")
+    # Best-effort by contract: build_report_chart() returns None instead
+    # of raising, so a rendering problem costs the picture, never the
+    # report. REPORT_CHART_ENABLED=false skips it entirely.
+    from src import report_chart
+    chart = report_chart.build_report_chart(symbol)
+    notify.notify(text, subject_prefix=f"Report {symbol}", image=chart)
     _record_snapshot(symbol, text)
 
 

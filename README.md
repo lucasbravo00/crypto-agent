@@ -73,13 +73,23 @@ src/
                              only to import real DCA trade history/balance, never
                              places an order.
   db.py                    -> thin Supabase client wrapper (optional; see Setup)
-  notify.py                -> output dispatcher: console / email / telegram
-  email_notifier.py        -> SMTP delivery to your mailbox (e.g. Outlook)
-  telegram_notifier.py     -> Telegram delivery (optional)
-  agent.py                 -> two coordinated sub-agents (Market Analyst,
-                             Portfolio Manager) on the Claude API
-  agent_ollama.py           -> the SAME two-sub-agent design on a local
-                             model via Ollama
+  notify.py                -> output dispatcher: console / email / telegram.
+                             Takes an OPTIONAL image that channels able to render
+                             one will attach (see "Report chart" below)
+  email_notifier.py        -> SMTP delivery to your mailbox (e.g. Outlook). With a
+                             chart, sends multipart/alternative: the plain-text part
+                             unchanged + an HTML part with the PNG inline (Content-ID)
+  telegram_notifier.py     -> Telegram delivery (optional). With a chart, sendPhoto
+                             carrying the text as caption; falls back to photo +
+                             separate message past Telegram's 1024-char caption limit
+  report_chart.py          -> renders the market context as a PNG with matplotlib
+                             (headless "Agg" backend). Best-effort by contract:
+                             returns None instead of raising, so a broken chart can
+                             never stop a report from being delivered
+  agent.py                 -> Market Analyst LLM sub-agent (market context) on the
+                             Claude API, plus a deterministic, non-LLM DCA/bullet
+                             alert from bullets.get_daily_alert()
+  agent_ollama.py           -> the SAME design on a local model via Ollama
 tests/
   test_logic.py            -> unit tests for market_data/strategy_tools (no network, no LLM)
   test_bullets.py          -> unit tests for the bullet state machine, including sync
@@ -89,6 +99,8 @@ tests/
   test_memory.py            -> unit tests for the memory/trend comparisons
   test_backtest.py          -> unit tests for the backtest, incl. hand-derived inverse
                              contract math (synthetic candles, no network)
+  test_report_chart.py      -> unit tests for the chart's series math and for how each
+                             channel carries the image (no SMTP, no Telegram, no network)
 state/                     -> local JSON state, used only when Supabase isn't configured
 logs/                      -> JSONL trace of every agent decision (auto-created)
 dashboard/index.html       -> single-file web dashboard (see "Web dashboard" below)
@@ -191,16 +203,20 @@ supabase/migration_*.sql   -> incremental migrations, run in order if your proje
   the account balance, so the next round's division starts from a bigger
   number — this is what lets `auto_trade()` size a bullet with no human
   typing an amount.
-- **Multi-agent report**: `run_daily_report()` coordinates two independent
-  sub-agents — a Market Analyst (price/indicators/cycle/sentiment tools
-  only) and a Portfolio Manager (DCA/bullet tools only), each with its
-  own prompt and `REQUIRED_TOOLS` set — then concatenates their text. No
-  synthesis LLM call: cheaper, faster, one fewer failure point, at the
-  cost of two sections instead of one fused narrative. Caught in testing:
-  giving the market analyst fewer, more focused tools didn't stop the
-  local Ollama model from once fabricating an indicator we never gave it
-  (MACD) and once mislabeling BTC dominance as BNB's — fixed with an
-  explicit "only report what a tool actually returned" rule in the prompt.
+- **One LLM sub-agent, and one deterministic function**:
+  `run_daily_report()` runs a single Market Analyst sub-agent
+  (price/indicators/cycle/sentiment tools only, with its own prompt and
+  `REQUIRED_TOOLS` set) and appends `bullets.get_daily_alert()` — plain
+  Python, no model. There used to be a second "Portfolio Manager" LLM
+  sub-agent for the DCA/bullet section; it was removed (2026-07-29) after
+  it fabricated an alert from numbers it misread, claiming a round was
+  near its target when the combined position was 18 points away. The
+  condition it was asked to evaluate was a fixed numeric threshold, so it
+  never needed a model's judgement in the first place. Same lesson as
+  everywhere else here: if code can guarantee the behaviour, don't buy it
+  from a prompt. Related fabrications caught in testing and fixed by
+  tightening the analyst's prompt: an indicator we never gave it (MACD),
+  BTC dominance mislabeled as another coin's, and a made-up future price.
 - **Retries with backoff** on all network calls (public APIs fail
   sporadically).
 - **Structured JSONL logging** of every tool call, its input and its
@@ -320,6 +336,52 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.cryptoagent.bulletch
 the background for `dailyreport` to work — if the Mac is off (asleep is
 fine; launchd catches up missed runs on wake) or Ollama isn't running at
 08:00, check `logs/launchd_dailyreport.err.log` for the failure.
+
+## Report chart
+
+The daily report ships with a PNG of the market context, so the email and
+the Telegram message show what the text is describing instead of only
+asserting it. Two stacked panels over the last 180 days: price with the
+SMA50 and SMA200, and the 14-day RSI with its 30/70 bands, under a header
+strip carrying the price, the 24h change, the Mayer Multiple, the distance
+to the 200-week SMA and Fear & Greed.
+
+Notes on how it's built (`src/report_chart.py`):
+
+- **matplotlib, not a hosted chart service.** QuickChart and friends would
+  have let us reuse the dashboard's Chart.js config directly, but they
+  mean shipping your data to a third party and adding a network
+  dependency to the delivery path. The chart is drawn from the candles
+  `market_data` already fetches for the report, so it adds no new external
+  dependency at all.
+- **The `Agg` backend, selected before pyplot is imported.** The report
+  runs in GitHub Actions with no display; any other backend fails there.
+- **The RSI series deliberately mirrors `market_data._rsi`'s simple mean**
+  over the last N deltas, rather than the more common Wilder smoothing.
+  The two produce visibly different numbers, and a chart whose last RSI
+  point disagreed with the RSI quoted in the text would defeat the purpose
+  of attaching it. `test_report_chart.py` asserts the two agree at every
+  index, so nobody can "improve" one of them in isolation.
+- **The image is a garnish, never the product.** `build_report_chart()`
+  returns `None` instead of raising, and each header lookup is
+  individually optional — a rate-limited Fear & Greed call costs that one
+  chip, not the picture, and a broken picture never costs the report.
+- **180 days shown, 400 candles fetched.** An SMA200 needs 200 candles of
+  history *before* the first plotted point, or the long average would only
+  appear part-way across the chart.
+- Only the daily report carries a chart. Bullet alerts and state-mismatch
+  warnings stay text-only: they're urgent and short, and an upload would
+  just slow them down.
+
+Set `REPORT_CHART_ENABLED=false` to go back to text-only delivery.
+
+Per-channel behaviour:
+
+| Channel | With a chart |
+|---|---|
+| Email | `multipart/alternative`: the plain-text part is unchanged, plus an HTML part with the PNG inline via `Content-ID`. Inline rather than a linked image because a link needs hosting and most clients block remote images by default — it would arrive as a broken box. A client that refuses HTML still gets the full report. |
+| Telegram | `sendPhoto` with the report as the photo's caption, so it lands as one message. Past Telegram's 1024-character caption limit the photo is sent bare and the text follows as its own message — split, never truncated. |
+| Console | Ignored (nothing to render). |
 
 ## Web dashboard
 
