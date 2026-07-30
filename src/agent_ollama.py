@@ -1,10 +1,17 @@
 """
 agent_ollama.py
 -----------------
-Same multi-agent design as agent.py (two independent sub-agents —
-Market Analyst and Portfolio Manager — coordinated by run_daily_report()),
-but the "brain" is an open-weight model running LOCALLY on your machine
-through Ollama, instead of the Claude API.
+Same design as agent.py -- a Market Analyst LLM sub-agent for the
+market-context section of the report, plus a deterministic (no LLM)
+DCA/bullet alert from bullets.get_daily_alert() -- but the "brain" is an
+open-weight model running LOCALLY on your machine through Ollama,
+instead of the Claude API.
+
+There used to be a second LLM sub-agent ("Portfolio Manager") for the
+DCA/bullet section. Removed 2026-07-29: asked to flag a simple numeric
+condition (round close to target? near liquidation?), this local model
+fabricated a false alert from numbers it misread. Moved to plain Python
+instead -- see run_daily_report().
 
 Key differences vs agent.py (interview-worthy details):
 
@@ -25,15 +32,11 @@ Key differences vs agent.py (interview-worthy details):
 
 4. Decision quality ("which tool, which parameters?") is generally less
    reliable than Claude's, especially on small (7-8B) models. It is
-   common for them to call a tool with a malformed parameter or skip a
-   tool they should use. The log (logs/agent_ollama_log.jsonl, tagged
-   per sub-agent) lets you compare this objectively against the Claude
-   backend.
-
-Splitting into two smaller sub-agents (8 required tools for the Market
-Analyst, 3 for the Portfolio Manager) also gives local models less to
-juggle in one pass than one single combined agent would, which helps
-with the batching inconsistency described in MAX_ITERATIONS below.
+   common for them to call a tool with a malformed parameter, skip a
+   tool they should use, or -- confirmed directly, see above -- invent
+   content that sounds plausible but isn't grounded in any tool result.
+   The log (logs/agent_ollama_log.jsonl) lets you audit this after the
+   fact.
 """
 from __future__ import annotations
 import json
@@ -42,18 +45,36 @@ from datetime import datetime, timezone
 
 import ollama
 
-from . import bullets, market_data, memory, state, strategy_tools
+from . import bullets, market_data, memory
 
 # Local model to use. Must be pulled beforehand:
 #   ollama pull llama3.1
 MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1")
-# Higher than agent.py's cap: local models are inconsistent about batching
-# multiple tool calls into one turn (sometimes several at once, sometimes
-# one at a time). This is a per-sub-agent budget; each sub-agent now has
-# fewer required tools than the original single-agent design (6 and 3
-# instead of 8), so 16 remains a safe ceiling rather than a tight one.
+# Local models are inconsistent about batching multiple tool calls into
+# one turn (sometimes several at once, sometimes one at a time), so this
+# stays generous even though there's only one sub-agent's 8 required
+# tools to cover now.
 MAX_ITERATIONS = 16
 LOG_PATH = os.path.join(os.path.dirname(__file__), "..", "logs", "agent_ollama_log.jsonl")
+
+def get_predictive_ranges(symbol: str = "BTC/USDT") -> dict:
+    """Predictive Ranges [LuxAlgo]: an ATR-based central average line
+    plus two resistance levels above it and two support levels below it.
+    Ported from the user's own TradingView setup, computed from real
+    BingX daily candles. An approximation (limited chart history) --
+    treat the levels as directional context, not exact numbers.
+
+    A thin wrapper, deliberately hiding market_data.get_predictive_ranges's
+    `length`/`mult` parameters: Ollama auto-generates a tool's schema
+    from ALL of a Python function's parameters, so passing that function
+    directly let the model invent its own `mult` (confirmed 2026-07-29:
+    it tried 2 and 0.5 on different calls, nothing like the backtested
+    default of 6.0), silently discarding the calibration the whole
+    feature was built and verified around. Only `symbol` is exposed here
+    on purpose -- length/mult always come from market_data's own
+    defaults, never from the model."""
+    return market_data.get_predictive_ranges(symbol)
+
 
 # We pass the real Python functions directly: Ollama builds the schema
 # on its own by reading each function's type hints + docstring.
@@ -64,94 +85,65 @@ MARKET_TOOL_FUNCTIONS = [
     market_data.get_cycle_metrics,
     market_data.get_fear_greed_index,
     market_data.get_btc_dominance,
-    market_data.get_predictive_ranges,
+    get_predictive_ranges,
     memory.get_market_memory,
 ]
 MARKET_REQUIRED_TOOLS = {fn.__name__ for fn in MARKET_TOOL_FUNCTIONS}
 
-PORTFOLIO_TOOL_FUNCTIONS = [
-    market_data.get_current_date,
-    state.get_dca_summary,
-    bullets.get_bullet_status,
-    strategy_tools.simulate_bullet_math,
-]
-PORTFOLIO_REQUIRED_TOOLS = {fn.__name__ for fn in PORTFOLIO_TOOL_FUNCTIONS} - {"simulate_bullet_math"}
-
-# One shared implementation map (get_current_date appears in both function
-# lists; the dict comprehension naturally dedupes it to the same function).
-TOOL_IMPL = {fn.__name__: fn for fn in MARKET_TOOL_FUNCTIONS + PORTFOLIO_TOOL_FUNCTIONS}
+# There is no portfolio-manager LLM sub-agent anymore -- see
+# run_daily_report()'s docstring for why (2026-07-29: this local model
+# fabricated an alert from numbers it misread). The DCA/bullet section of
+# the report is now bullets.get_daily_alert(), a plain Python function
+# with no model in the loop.
+TOOL_IMPL = {fn.__name__: fn for fn in MARKET_TOOL_FUNCTIONS}
 
 
 def _market_analyst_prompt() -> str:
     language = os.environ.get("REPORT_LANGUAGE", "en")
     return f"""You are the MARKET ANALYST sub-agent of a crypto strategy
-assistant. Your job is ONLY the market-context section of a daily
-report — nothing about the user's own portfolio or bullet positions,
-that is a separate sub-agent's job.
+assistant. Your job is the market-context section of a daily report —
+nothing about the user's own portfolio, that's a separate sub-agent.
 
 1. You MUST call every one of these tools before writing your answer:
    get_current_date, get_price, get_indicators, get_cycle_metrics,
    get_fear_greed_index, get_btc_dominance, get_predictive_ranges,
    get_market_memory. Do not skip any.
-2. NEVER state or imply a date/year from memory. If you reference
-   "today", use only what get_current_date returned.
-3. ONLY report numbers and indicators that a tool call actually
-   returned. Do NOT mention, infer, or fabricate any other metric (e.g.
-   MACD, Bollinger Bands, an RSI on a timeframe you weren't given) that
-   wasn't returned by one of the tools above. get_btc_dominance returns
-   BITCOIN's dominance specifically — never attribute that number to any
-   other coin (e.g. BNB, ETH). get_predictive_ranges levels are an
-   approximation (limited chart history) — treat them as directional,
-   never as exact numbers.
-4. DO NOT just list numbers one after another. Interpret them together:
-   use get_market_memory's PRE-COMPUTED trend labels ("subiendo" /
-   "bajando" / "estable") to say what changed and over which window —
-   never recompute or contradict a trend label yourself, and treat
-   "sin_dato" windows as simply not having enough history yet, don't
-   guess around them. Relate the current price to the
-   get_predictive_ranges levels (e.g. near resistance_1, between average
-   and support_1, etc.). Cross-reference indicators when they reinforce
-   or contradict each other (e.g. RSI rising while Fear & Greed drops).
-5. NEVER give buy/sell signals or assert whether the market's bottom or
-   top has arrived — that call belongs to the user alone.
-6. Close with 1-2 neutral lines about which market data is worth
-   watching over the next days (no trading instructions).
+2. NEVER state or imply a date/year from memory.
+3. THE ONLY INDICATORS THAT EXIST FOR YOU are exactly what those tools
+   returned: SMA50, SMA200, RSI14 (daily), weekly RSI14, Mayer Multiple,
+   distance to the 200-week SMA, Fear & Greed, BTC dominance, and the
+   Predictive Ranges levels (average/resistance_1/resistance_2/
+   support_1/support_2). There is no EMA, no Fibonacci, no MACD, no
+   Bollinger Bands, no "next week" price projection anywhere in this
+   system — if it isn't in that list, it does not exist; do not mention
+   it, infer it, or estimate it, under any circumstance. This rule
+   overrides the style instruction below: a shorter, wrong report is
+   worse than a shorter, correct one.
+4. get_btc_dominance returns BITCOIN's dominance specifically — never
+   attribute it to another coin. get_predictive_ranges levels are an
+   approximation (limited chart history) — directional, not exact.
+5. WRITE LIKE A SHARP TRADER TEXTING A QUICK TAKE, not a data report.
+   3-4 short sentences, TOTAL. No numbers dump, no listing every
+   indicator you called — pick only what's actually notable today
+   (FROM THE REAL LIST IN RULE 3 ONLY) and weave it into plain language,
+   the way a person would describe the market to a friend, not a
+   spreadsheet. Use get_market_memory's trend labels to say what
+   CHANGED, not just where things sit — that's usually the more
+   interesting part.
+6. NEVER give buy/sell signals, never say something is "a good time to
+   buy/sell" or "an opportunity", and never state or imply a future
+   price, target, or projection (there is no such tool, so any number
+   you'd give would be invented) — that call belongs to the user alone.
+   A historically extreme reading can be noted as a fact, never as a
+   signal to act on.
+7. If genuinely nothing changed and nothing looks notable, say that
+   plainly in one short line instead of padding with numbers.
 
-Be concise: max ~160 words, plain text, no markdown headers (this text
-is concatenated with another sub-agent's section afterward).
+Max ~70 words, TOTAL. Plain text, no markdown headers, no bullet lists,
+no headers, no "Section:" labels — just the take, like a text message.
 Write in this language (ISO code): {language}."""
 
 
-def _portfolio_manager_prompt() -> str:
-    language = os.environ.get("REPORT_LANGUAGE", "en")
-    return f"""You are the PORTFOLIO MANAGER sub-agent of a crypto
-strategy assistant, for a user who:
-- Is in a DCA accumulation phase toward BTC during a bear market, and
-  may separately be running a manual leveraged-futures "bullet" cycle
-  on BingX. Bullets ACCUMULATE: at most one NEW bullet per day, with
-  previous ones staying open, up to a lifetime cap of 30. The +15%
-  target is evaluated on the COMBINED position across every active
-  bullet, not per individual bullet — when the combined gain hits +15%,
-  ALL active bullets close together. You never open, close, or suggest
-  opening/closing any position — every trade is manual, on the exchange,
-  decided by the user alone.
-
-Your job is ONLY the portfolio-status section of a daily report —
-covering the user's own DCA purchases and bullet cycle, not general
-market context, that is a separate sub-agent's job.
-
-1. Use get_current_date, get_dca_summary, and get_bullet_status. Report
-   plainly even if there are zero purchases or bullets yet.
-2. get_bullet_status's "live_status" field (when not null) describes the
-   CURRENT ROUND: how many bullets are active, their combined unrealized
-   P&L, the combined position gain % vs. the target, and whether any
-   individual bullet is near its own liquidation price. Report these as
-   plain facts. NEVER tell the user to close, hold, or add margin.
-3. NEVER give buy/sell signals or advice about DCA pace or sizing.
-
-Be concise: max ~120 words, plain text, no markdown headers (this text
-is concatenated with another sub-agent's section afterward).
-Write in this language (ISO code): {language}."""
 
 
 def _log(event: dict) -> None:
@@ -226,15 +218,25 @@ def _run_subagent(
 
 
 def run_daily_report(symbol: str = "BTC/USDT") -> str:
-    """Coordinate the two sub-agents and concatenate their sections."""
+    """Run the market analyst sub-agent, then append a DCA/bullet alert
+    line if (and only if) bullets.get_daily_alert() finds something worth
+    flagging.
+
+    There used to be a second LLM sub-agent ("portfolio manager") for
+    this. Removed 2026-07-29: asked to report the SAME simple numeric
+    condition (is the round close to target? near liquidation?), this
+    local Ollama model fabricated a false alert from numbers it misread
+    -- a textbook case of the lesson this whole project is built around
+    (don't rely on a prompt for behavior code can guarantee instead).
+    The dashboard already shows full DCA/bullet detail, so there's
+    nothing here worth an LLM's judgment call on: it's a fixed
+    threshold, checked in Python, worded as a template string."""
     market_text = _run_subagent(
         "market_analyst", MARKET_TOOL_FUNCTIONS, MARKET_REQUIRED_TOOLS,
         _market_analyst_prompt(),
         f"Build the market-context section of the daily report for {symbol}.",
     )
-    portfolio_text = _run_subagent(
-        "portfolio_manager", PORTFOLIO_TOOL_FUNCTIONS, PORTFOLIO_REQUIRED_TOOLS,
-        _portfolio_manager_prompt(),
-        "Build the DCA-and-bullet-cycle section of the daily report.",
-    )
-    return f"{market_text}\n\n{portfolio_text}"
+    alert = bullets.get_daily_alert()
+    if not alert:
+        return market_text
+    return f"{market_text}\n\n{alert}"

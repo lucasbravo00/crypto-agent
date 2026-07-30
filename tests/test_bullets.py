@@ -665,3 +665,60 @@ def test_sync_with_bingx_reads_exit_fee_from_sell_trade(monkeypatch):
     assert closed["exit_fee_usd"] == 0.25
     # 0 raw gain (same price) - 0.25 entry - 0.25 exit
     assert closed["realized_pnl_usd"] == -0.5
+
+
+# --- get_daily_alert() ---------------------------------------------------
+# Deterministic (no LLM) replacement for the old "portfolio manager"
+# sub-agent, added after that sub-agent (on the local Ollama backend)
+# fabricated a false alert from numbers it misread.
+
+def test_get_daily_alert_none_when_nothing_active():
+    assert bullets.get_daily_alert() is None
+
+
+def test_get_daily_alert_none_when_far_from_target(monkeypatch):
+    from src import market_data
+    # Reproduces the exact real-world bug: combined gain -3.71% vs a 15%
+    # target is nowhere close -- must NOT alert.
+    _insert_bullet(500, 60000, leverage=5, opened_at=YESTERDAY)
+    monkeypatch.setattr(market_data, "get_price", lambda symbol: {"last_price": 59777.4})
+    assert bullets.get_daily_alert() is None
+
+
+def test_get_daily_alert_fires_when_close_to_target(monkeypatch):
+    from src import market_data
+    # +12% combined at 5x needs about +2.4% price move; target is 15%,
+    # gap is 3 points -- right at the alert threshold.
+    _insert_bullet(500, 60000, leverage=5, opened_at=YESTERDAY)
+    monkeypatch.setattr(market_data, "get_price", lambda symbol: {"last_price": 61440.0})
+    alert = bullets.get_daily_alert()
+    assert alert is not None
+    assert "objetivo" in alert
+
+
+def test_get_daily_alert_fires_when_near_liquidation(monkeypatch):
+    from src import market_data
+    _insert_bullet(500, 60000, leverage=5, opened_at=YESTERDAY)
+    # approx_liquidation_price at x5 is 48000; within LIQUIDATION_PROXIMITY_PCT (5%) of it.
+    monkeypatch.setattr(market_data, "get_price", lambda symbol: {"last_price": 49500.0})
+    alert = bullets.get_daily_alert()
+    assert alert is not None
+    assert "liquidaci" in alert.lower()
+
+
+def test_get_daily_alert_can_report_both_conditions_together(monkeypatch):
+    # Isolate get_daily_alert()'s own condition/concatenation logic from
+    # the underlying P&L math (already covered by the tests above) by
+    # mocking get_bullet_status directly with both conditions true.
+    monkeypatch.setattr(bullets, "get_bullet_status", lambda symbol="BTC/USDT": {
+        "live_status": {
+            "combined_position_gain_pct": 13.0,
+            "target_position_gain_pct": 15.0,
+            "near_liquidation_any": True,
+            "bullets": [{"bullet_number": 1, "near_liquidation": True}],
+        },
+    })
+    alert = bullets.get_daily_alert()
+    assert alert is not None
+    assert "objetivo" in alert
+    assert "liquidaci" in alert.lower()

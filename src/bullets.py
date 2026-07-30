@@ -555,6 +555,47 @@ def get_bullet_status(symbol: str = "BTC/USDT") -> dict:
     return {**summary, "live_status": check_bullets(current_price)}
 
 
+# How close (in percentage points of combined position gain) to the
+# round's target before get_daily_alert() flags it in the report.
+DAILY_ALERT_TARGET_GAP_PCT = 3.0
+
+
+def get_daily_alert(symbol: str = "BTC/USDT") -> str | None:
+    """Deterministic (no LLM) check for whether the daily report should
+    say anything about the bullet cycle. Plain Python, not a prompt --
+    replaced an LLM "portfolio manager" sub-agent that was asked this
+    exact question and, on the local Ollama backend, fabricated a false
+    alert from numbers it misread (confirmed 2026-07-29). The dashboard
+    already shows full DCA/bullet detail, so a quiet day says nothing at
+    all -- this only speaks up for something worth catching before the
+    user next opens the dashboard: the round plausibly about to close,
+    or a bullet near its own liquidation price.
+
+    Returns:
+        None on a quiet day. A short, human-readable sentence (or two,
+        space-joined) otherwise.
+    """
+    status = get_bullet_status(symbol)
+    live = status.get("live_status")
+    if not live:
+        return None
+
+    parts = []
+    gap = live["target_position_gain_pct"] - live["combined_position_gain_pct"]
+    if gap <= DAILY_ALERT_TARGET_GAP_PCT:
+        parts.append(
+            f"La ronda actual está en {live['combined_position_gain_pct']}% "
+            f"de su objetivo de {live['target_position_gain_pct']}% combinado "
+            "-- podría cerrar pronto."
+        )
+    if live["near_liquidation_any"]:
+        near = [b for b in live["bullets"] if b["near_liquidation"]]
+        nums = ", ".join(f"#{b['bullet_number']}" for b in near)
+        parts.append(f"⚠️ Bala(s) {nums} cerca de su precio de liquidación.")
+
+    return " ".join(parts) if parts else None
+
+
 def sync_with_bingx() -> dict:
     """Reconcile your bullet records against your REAL BingX Demo Trading
     account, using TRADE history rather than positions.
