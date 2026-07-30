@@ -3,685 +3,1358 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#07090D" />
   <title>Crypto Agent · Dashboard</title>
 
   <!-- Supabase JS SDK and Chart.js, both from public CDNs (no build step). -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 
+  <!-- Space Grotesk for UI (technical, distinctive) + JetBrains Mono for
+       every number: tabular figures keep columns of money aligned, which
+       is the single biggest readability win in a financial table. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+
   <style>
     :root {
-      --bg: #0e1116;
-      --panel: #171b22;
-      --panel-2: #1e242d;
-      --border: #2a313c;
-      --text: #e6e9ef;
-      --muted: #8b94a3;
-      --accent: #f7931a;      /* bitcoin orange */
-      --green: #3fb950;
-      --red: #f85149;
+      --bg:        #07090D;
+      --surface:   #11151C;
+      --surface-2: #161B23;
+      --surface-3: #1C222C;
+      --line:      rgba(255,255,255,.07);
+      --line-2:    rgba(255,255,255,.14);
+      --tx:        #E8ECF2;
+      --tx-2:      #97A1B0;
+      --tx-3:      #5C6673;
+      --or:        #F7931A;   /* bitcoin orange */
+      --or-dim:    rgba(247,147,26,.13);
+      --gr:        #2EBD85;
+      --gr-dim:    rgba(46,189,133,.13);
+      --rd:        #F6465D;
+      --rd-dim:    rgba(246,70,93,.13);
+      --bl:        #4C8DFF;
+      --pu:        #A78BFA;
+      --yl:        #E3B341;
+      --r:   12px;
+      --r-lg:16px;
+      --shadow: 0 1px 2px rgba(0,0,0,.5), 0 12px 32px -18px rgba(0,0,0,.9);
+      --ui: "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --prose: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
     }
+
     * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
     body {
       margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-family: var(--ui);
       background: var(--bg);
-      color: var(--text);
+      color: var(--tx);
       -webkit-font-smoothing: antialiased;
-    }
-    a { color: var(--accent); }
-
-    /* --- Login --- */
-    #login {
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 20px;
-    }
-    .login-card {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 32px;
-      width: 100%;
-      max-width: 360px;
-    }
-    .login-card h1 { margin: 0 0 4px; font-size: 20px; }
-    .login-card p { margin: 0 0 24px; color: var(--muted); font-size: 14px; }
-    .login-card input {
-      width: 100%;
-      padding: 12px 14px;
-      margin-bottom: 12px;
-      background: var(--panel-2);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      color: var(--text);
-      font-size: 15px;
-    }
-    .login-card button, .btn {
-      width: 100%;
-      padding: 12px;
-      background: var(--accent);
-      color: #000;
-      border: none;
-      border-radius: 8px;
-      font-size: 15px;
-      font-weight: 600;
-      cursor: pointer;
-    }
-    .login-card button:disabled { opacity: 0.6; cursor: default; }
-    .error { color: var(--red); font-size: 13px; margin-top: 10px; min-height: 18px; }
-
-    /* --- Dashboard shell --- */
-    #dashboard { display: none; max-width: 1100px; margin: 0 auto; padding: 20px; }
-    header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 8px;
-      flex-wrap: wrap;
-      gap: 8px;
-    }
-    header h1 { font-size: 20px; margin: 0; }
-    header .updated { color: var(--muted); font-size: 13px; }
-    .logout {
-      background: transparent;
-      border: 1px solid var(--border);
-      color: var(--muted);
-      padding: 7px 14px;
-      border-radius: 8px;
-      cursor: pointer;
-      font-size: 13px;
-      width: auto;
-    }
-
-    section { margin-top: 28px; }
-    section h2 { font-size: 15px; color: var(--muted); text-transform: uppercase;
-                 letter-spacing: 0.05em; margin: 0 0 12px; font-weight: 600; }
-    .section-note { color: var(--muted); font-size: 13px; margin: -6px 0 12px; line-height: 1.5; }
-    .card.total { border-color: var(--accent); }
-
-    /* Cards grid */
-    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
-    .card {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 16px;
-    }
-    .card .label { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
-    .card .value { font-size: 22px; font-weight: 700; }
-    .card .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
-    .pos { color: var(--green); }
-    .neg { color: var(--red); }
-
-    /* Charts */
-    .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
-    .chart-box {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 16px;
-    }
-    .chart-box h3 { margin: 0 0 12px; font-size: 14px; font-weight: 600; }
-    .chart-note { color: var(--muted); font-size: 12px; margin: -6px 0 12px; line-height: 1.4; }
-
-    /* Tables */
-    table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
-    th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
-    .table-wrap { background: var(--panel); border: 1px solid var(--border);
-                  border-radius: 12px; overflow-x: auto; }
-    .badge { padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; }
-    .badge.open, .badge.tracking { background: rgba(247,147,26,0.15); color: var(--accent); }
-    .badge.closed_tp { background: rgba(63,185,80,0.15); color: var(--green); }
-    .badge.closed_manual { background: rgba(139,148,163,0.15); color: var(--muted); }
-
-    /* Report text */
-    .report-text {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 20px;
-      white-space: pre-wrap;
-      line-height: 1.6;
       font-size: 14px;
     }
-    .empty { color: var(--muted); font-size: 14px; padding: 16px; }
-    .disclaimer { color: var(--muted); font-size: 12px; margin-top: 32px;
-                  text-align: center; line-height: 1.5; }
+    /* Single soft glow behind the top of the page — gives the flat dark
+       background some depth without any per-card gradients. */
+    body::before {
+      content: "";
+      position: fixed; inset: 0; pointer-events: none; z-index: 0;
+      background:
+        radial-gradient(900px 420px at 50% -140px, rgba(247,147,26,.10), transparent 70%),
+        radial-gradient(700px 380px at 88% -60px,  rgba(76,141,255,.07), transparent 70%);
+    }
+    .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+    .pos { color: var(--gr); }
+    .neg { color: var(--rd); }
+    .dim { color: var(--tx-2); }
+
+    /* ============ LOGIN ============ */
+    #login { min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; position:relative; z-index:1; }
+    .login-card {
+      background: var(--surface); border:1px solid var(--line);
+      border-radius: var(--r-lg); padding:32px; width:100%; max-width:380px;
+      box-shadow: var(--shadow);
+    }
+    .login-card h1 { margin:18px 0 6px; font-size:21px; font-weight:700; letter-spacing:-.02em; }
+    .login-card > p { margin:0 0 26px; color:var(--tx-2); font-size:13.5px; line-height:1.5; }
+    .field { position:relative; margin-bottom:11px; }
+    .field input {
+      width:100%; padding:13px 14px; background:var(--bg); border:1px solid var(--line);
+      border-radius:10px; color:var(--tx); font-size:14.5px; font-family:var(--ui);
+      transition: border-color .15s, background .15s;
+    }
+    .field input:focus { outline:none; border-color:var(--or); background:var(--surface-2); }
+    .field input::placeholder { color:var(--tx-3); }
+    .btn-primary {
+      width:100%; padding:13px; background:var(--or); color:#0B0B0B; border:none;
+      border-radius:10px; font-size:14.5px; font-weight:700; cursor:pointer;
+      font-family:var(--ui); transition: filter .15s, transform .05s;
+    }
+    .btn-primary:hover { filter:brightness(1.08); }
+    .btn-primary:active { transform: translateY(1px); }
+    .btn-primary:disabled { opacity:.55; cursor:default; }
+    .error { color:var(--rd); font-size:12.5px; margin-top:12px; min-height:18px; line-height:1.4; }
+
+    /* Brand mark: rounded orange tile with the ₿ glyph. */
+    .mark {
+      width:38px; height:38px; border-radius:11px; flex:none;
+      background: linear-gradient(150deg, #FFB350, var(--or) 55%, #D97706);
+      color:#120C02; display:grid; place-items:center;
+      font-size:20px; font-weight:700; line-height:1;
+      box-shadow: 0 4px 14px -4px rgba(247,147,26,.6);
+    }
+    .mark.sm { width:30px; height:30px; border-radius:9px; font-size:16px; }
+
+    /* ============ SHELL ============ */
+    #app { display:none; position:relative; z-index:1; }
+    .wrap { max-width:1240px; margin:0 auto; padding:0 22px; }
+
+    .topbar {
+      position:sticky; top:0; z-index:40;
+      background: rgba(7,9,13,.82);
+      backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+      border-bottom:1px solid var(--line);
+    }
+    .topbar-in { display:flex; align-items:center; gap:14px; height:62px; }
+    .brand { display:flex; align-items:center; gap:10px; min-width:0; }
+    .brand b { font-size:15px; font-weight:700; letter-spacing:-.02em; white-space:nowrap; }
+    .brand span { font-size:11px; color:var(--tx-3); display:block; margin-top:1px; letter-spacing:.02em; }
+    .spacer { flex:1; }
+
+    /* Live price pill — always visible, the one number worth pinning. */
+    .price-pill {
+      display:flex; align-items:center; gap:10px; padding:7px 13px;
+      background:var(--surface); border:1px solid var(--line); border-radius:999px;
+    }
+    .price-pill .p { font-family:var(--mono); font-size:14px; font-weight:700; font-variant-numeric:tabular-nums; }
+    .price-pill .c { font-family:var(--mono); font-size:12px; font-weight:500; }
+    .dot { width:7px; height:7px; border-radius:50%; background:var(--gr); flex:none; }
+    .dot.live { animation: pulse 2.2s ease-in-out infinite; }
+    .dot.stale { background:var(--tx-3); animation:none; }
+    @keyframes pulse {
+      0%,100% { box-shadow:0 0 0 0 rgba(46,189,133,.55); opacity:1; }
+      50%     { box-shadow:0 0 0 5px rgba(46,189,133,0); opacity:.75; }
+    }
+
+    .icon-btn {
+      width:34px; height:34px; display:grid; place-items:center; flex:none;
+      background:var(--surface); border:1px solid var(--line); border-radius:9px;
+      color:var(--tx-2); cursor:pointer; font-size:14px; transition:.15s;
+    }
+    .icon-btn:hover { color:var(--tx); border-color:var(--line-2); background:var(--surface-2); }
+    .icon-btn.spin svg { animation: rot .8s linear infinite; }
+    @keyframes rot { to { transform: rotate(360deg); } }
+
+    /* ============ HERO ============ */
+    .hero { display:grid; grid-template-columns: 1.15fr 1fr; gap:16px; margin:26px 0 22px; }
+    .hero-main {
+      background: var(--surface); border:1px solid var(--line); border-radius:var(--r-lg);
+      padding:22px 24px; box-shadow:var(--shadow); position:relative; overflow:hidden;
+    }
+    .hero-main::after {
+      content:""; position:absolute; right:-60px; top:-60px; width:220px; height:220px;
+      background: radial-gradient(circle, rgba(247,147,26,.10), transparent 70%); pointer-events:none;
+    }
+    .eyebrow {
+      font-size:10.5px; font-weight:600; letter-spacing:.11em; text-transform:uppercase;
+      color:var(--tx-3); display:flex; align-items:center; gap:7px;
+    }
+    .hero-value {
+      font-family:var(--mono); font-size:42px; font-weight:700; letter-spacing:-.035em;
+      margin:10px 0 6px; line-height:1; font-variant-numeric:tabular-nums;
+    }
+    .hero-delta { font-family:var(--mono); font-size:13.5px; font-weight:500; }
+
+    /* Stacked bar splitting real DCA money from virtual demo VST money. */
+    .split { margin-top:20px; }
+    .split-bar { display:flex; height:8px; border-radius:999px; overflow:hidden; background:var(--surface-3); gap:2px; }
+    .split-bar i { display:block; height:100%; border-radius:999px; }
+    .split-legend { display:flex; gap:18px; margin-top:11px; flex-wrap:wrap; }
+    .split-legend div { display:flex; align-items:center; gap:7px; font-size:12px; color:var(--tx-2); }
+    .swatch { width:8px; height:8px; border-radius:3px; flex:none; }
+
+    .hero-side { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+    .gauge-card {
+      background:var(--surface); border:1px solid var(--line); border-radius:var(--r-lg);
+      padding:18px; display:flex; flex-direction:column; align-items:center; box-shadow:var(--shadow);
+    }
+    .gauge-card .eyebrow { align-self:flex-start; }
+    .gauge-val { font-family:var(--mono); font-size:26px; font-weight:700; line-height:1; margin-top:-14px; }
+    .gauge-sub { font-size:11.5px; color:var(--tx-2); margin-top:6px; text-align:center; line-height:1.4; }
+
+    /* ============ TABS ============ */
+    .tabs {
+      display:flex; gap:4px; border-bottom:1px solid var(--line);
+      position:sticky; top:62px; z-index:30; background:rgba(7,9,13,.9);
+      backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
+      overflow-x:auto; scrollbar-width:none;
+    }
+    .tabs::-webkit-scrollbar { display:none; }
+    .tab {
+      appearance:none; background:none; border:none; cursor:pointer;
+      font-family:var(--ui); font-size:13.5px; font-weight:500; color:var(--tx-2);
+      padding:13px 15px; white-space:nowrap; position:relative; transition:color .15s;
+      display:flex; align-items:center; gap:7px;
+    }
+    .tab:hover { color:var(--tx); }
+    .tab.active { color:var(--tx); font-weight:600; }
+    .tab.active::after {
+      content:""; position:absolute; left:12px; right:12px; bottom:-1px; height:2px;
+      background:var(--or); border-radius:2px 2px 0 0;
+    }
+    .tab .count {
+      font-family:var(--mono); font-size:10.5px; padding:1px 6px; border-radius:5px;
+      background:var(--surface-3); color:var(--tx-2); font-weight:500;
+    }
+    .panel { display:none; padding:24px 0 40px; }
+    .panel.active { display:block; animation: fade .22s ease; }
+    @keyframes fade { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:none; } }
+
+    /* ============ BLOCKS ============ */
+    .block {
+      background:var(--surface); border:1px solid var(--line);
+      border-radius:var(--r-lg); box-shadow:var(--shadow); overflow:hidden;
+    }
+    .block-head {
+      display:flex; align-items:center; gap:10px; padding:15px 18px;
+      border-bottom:1px solid var(--line);
+    }
+    .block-head h3 { margin:0; font-size:13.5px; font-weight:600; letter-spacing:-.01em; }
+    .block-head .tag {
+      font-size:10px; font-weight:600; letter-spacing:.06em; text-transform:uppercase;
+      padding:3px 7px; border-radius:5px; background:var(--surface-3); color:var(--tx-2);
+    }
+    .block-head .tag.real  { background:var(--or-dim); color:var(--or); }
+    .block-head .tag.demo  { background:rgba(76,141,255,.13); color:var(--bl); }
+    .block-body { padding:18px; }
+    .note { color:var(--tx-2); font-size:12.5px; line-height:1.6; margin:0 0 16px; font-family:var(--prose); }
+    .note:last-child { margin-bottom:0; }
+    .note code { font-family:var(--mono); font-size:11.5px; background:var(--surface-3); padding:1px 5px; border-radius:4px; color:var(--tx); }
+
+    .grid-2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:16px; }
+    /* The cycle panel always has 4 charts: a hard 2x2 beats auto-fit's
+       ragged 3+1 at wide viewports. */
+    .grid-2x2 { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+    @media (max-width: 860px) { .grid-2x2 { grid-template-columns:1fr; } }
+    .grid-3 { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:16px; }
+
+    /* Stat: label / value / sub. Used inside blocks, in a tight grid. */
+    /* Fixed 2 columns: these blocks always show 4 stats, and auto-fit left
+       ragged empty cells that read as broken layout. */
+    .stats { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1px;
+             background:var(--line); border-radius:10px; overflow:hidden; }
+    .stats.wide { grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); }
+    .stat { background:var(--surface); padding:14px 15px; }
+    .stat .l { font-size:10.5px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--tx-3); }
+    .stat .v { font-family:var(--mono); font-size:19px; font-weight:700; margin-top:7px; letter-spacing:-.02em; }
+    .stat .s { font-family:var(--mono); font-size:11.5px; margin-top:4px; color:var(--tx-2); }
+
+    /* 30-segment round budget indicator. */
+    .segs { display:flex; gap:3px; margin:12px 0 8px; }
+    .segs i { flex:1; height:22px; border-radius:3px; background:var(--surface-3); transition:.2s; }
+    .segs i.on { background:var(--or); box-shadow:0 0 10px -2px rgba(247,147,26,.7); }
+
+    /* Progress toward the round's combined +15% target. */
+    /* Right padding keeps the "+15%" goal flag from clipping at the edge. */
+    .track { position:relative; height:30px; margin:16px 34px 8px 0; }
+    .track-bg { position:absolute; inset:11px 0 auto; height:8px; border-radius:999px; background:var(--surface-3); }
+    .track-fill { position:absolute; top:11px; height:8px; border-radius:999px; transition:.3s; }
+    .track-zero { position:absolute; top:5px; width:1px; height:20px; background:var(--line-2); }
+    .track-goal { position:absolute; top:2px; transform:translateX(-50%); font-size:10px; color:var(--tx-3); font-family:var(--mono); }
+    .track-goal::after { content:""; position:absolute; left:50%; top:13px; width:2px; height:14px; background:var(--gr); border-radius:2px; }
+    .track-mark { position:absolute; top:8px; width:3px; height:14px; border-radius:2px; background:var(--tx); transform:translateX(-50%); }
+
+    /* ============ CHARTS ============ */
+    .chart-box { background:var(--surface); border:1px solid var(--line); border-radius:var(--r-lg); padding:18px; box-shadow:var(--shadow); }
+    .chart-box h4 { margin:0 0 3px; font-size:13px; font-weight:600; display:flex; align-items:center; gap:8px; }
+    .chart-box .sub { color:var(--tx-3); font-size:11.5px; margin:0 0 14px; line-height:1.5; font-family:var(--prose); }
+    .chart-box canvas { width:100%; }
+    .chip { font-family:var(--mono); font-size:11px; font-weight:600; padding:2px 7px; border-radius:5px; background:var(--surface-3); color:var(--tx-2); }
+    .chip.up { background:var(--gr-dim); color:var(--gr); }
+    .chip.down { background:var(--rd-dim); color:var(--rd); }
+    .chip.hot { background:var(--rd-dim); color:var(--rd); }
+    .chip.cold { background:var(--gr-dim); color:var(--gr); }
+
+    /* ============ TABLES ============ */
+    .table-scroll { overflow-x:auto; }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th, td { text-align:left; padding:11px 14px; border-bottom:1px solid var(--line); white-space:nowrap; }
+    thead th {
+      font-size:10.5px; font-weight:600; letter-spacing:.07em; text-transform:uppercase;
+      color:var(--tx-3); background:var(--surface-2); position:sticky; top:0;
+    }
+    tbody tr { transition:background .12s; }
+    tbody tr:hover { background:var(--surface-2); }
+    tbody tr:last-child td { border-bottom:none; }
+    td.num, th.num { text-align:right; font-family:var(--mono); font-variant-numeric:tabular-nums; }
+    tr.group td {
+      background:var(--surface-2); font-size:11.5px; font-weight:600;
+      letter-spacing:.03em; color:var(--tx-2); padding:9px 14px;
+    }
+    tr.group .rn { color:var(--tx); font-weight:700; }
+    .badge { padding:3px 8px; border-radius:6px; font-size:10.5px; font-weight:600; letter-spacing:.02em; }
+    .badge.open, .badge.tracking { background:var(--or-dim); color:var(--or); }
+    .badge.closed_tp { background:var(--gr-dim); color:var(--gr); }
+    .badge.closed_manual, .badge.closed_liquidated { background:rgba(151,161,176,.13); color:var(--tx-2); }
+    .src { font-size:11px; color:var(--tx-3); }
+
+    /* ============ REPORT ============ */
+    .report {
+      display:flex; gap:14px; padding:20px; background:var(--surface);
+      border:1px solid var(--line); border-radius:var(--r-lg); box-shadow:var(--shadow);
+    }
+    .report-body { min-width:0; flex:1; }
+    .report-meta { display:flex; align-items:center; gap:9px; margin-bottom:10px; flex-wrap:wrap; }
+    .report-meta b { font-size:13px; font-weight:600; }
+    .report-meta time { font-size:11.5px; color:var(--tx-3); font-family:var(--mono); }
+    .report-text { white-space:pre-wrap; line-height:1.72; font-size:14.5px; font-family:var(--prose); color:#DFE4EC; max-width:70ch; }
+    .archive-item {
+      display:flex; align-items:center; gap:12px; width:100%; text-align:left;
+      background:none; border:none; border-bottom:1px solid var(--line);
+      padding:13px 18px; cursor:pointer; color:var(--tx-2); font-family:var(--ui); font-size:13px;
+      transition:background .12s;
+    }
+    .archive-item:hover { background:var(--surface-2); color:var(--tx); }
+    .archive-item time { font-family:var(--mono); font-size:12px; color:var(--tx-3); flex:none; width:88px; }
+    .archive-item .snippet { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; }
+
+    /* ============ MISC ============ */
+    .empty { color:var(--tx-3); font-size:13.5px; padding:34px 18px; text-align:center; line-height:1.6; }
+    .empty .big { font-size:26px; display:block; margin-bottom:10px; opacity:.5; }
+    .skel { background:linear-gradient(90deg,var(--surface-2) 25%,var(--surface-3) 50%,var(--surface-2) 75%);
+            background-size:200% 100%; animation:sh 1.3s infinite; border-radius:8px; }
+    @keyframes sh { to { background-position:-200% 0; } }
+    .disclaimer {
+      border-top:1px solid var(--line); margin-top:8px; padding:26px 0 44px;
+      color:var(--tx-3); font-size:11.5px; text-align:center; line-height:1.65; font-family:var(--prose);
+    }
+    .row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    .mt { margin-top:16px; }
+
+    @media (max-width: 900px) {
+      .hero { grid-template-columns:1fr; }
+      .hero-value { font-size:34px; }
+      .wrap { padding:0 14px; }
+      .brand span { display:none; }
+      .price-pill .c { display:none; }
+    }
+    @media (max-width: 560px) {
+      /* Keep both gauges side by side (they scale down fine) instead of
+         costing two full screens of vertical scroll. */
+      .gauge-card { padding:14px 8px; }
+      .gauge-card svg { width:100%; height:auto; max-width:148px; }
+      .report { flex-direction:column; gap:10px; }
+      /* The brand wordmark is the first thing to go: at 375px it collided
+         with the price pill. The mark alone still identifies the app. */
+      .brand b { display:none; }
+      .topbar-in { gap:9px; height:56px; }
+      .price-pill { padding:6px 11px; }
+      .hero-value { font-size:30px; }
+      th, td { padding:10px 11px; }
+    }
   </style>
 </head>
 <body>
-  <!-- ============ LOGIN ============ -->
-  <div id="login">
-    <form class="login-card" id="login-form">
-      <h1>Crypto Agent</h1>
-      <p>Iniciá sesión para ver tu dashboard.</p>
-      <input type="email" id="email" placeholder="Email" autocomplete="username" required />
-      <input type="password" id="password" placeholder="Contraseña" autocomplete="current-password" required />
-      <button type="submit" id="login-btn">Entrar</button>
-      <div class="error" id="login-error"></div>
-    </form>
-  </div>
 
-  <!-- ============ DASHBOARD ============ -->
-  <div id="dashboard">
-    <header>
-      <div>
-        <h1>Crypto Agent · Dashboard</h1>
-        <div class="updated" id="last-updated"></div>
-      </div>
-      <div style="display:flex; gap:8px;">
-        <button class="logout" id="refresh-btn" title="Recargar todo">🔄 Actualizar</button>
-        <button class="logout" id="logout-btn">Cerrar sesión</button>
-      </div>
-    </header>
+<!-- ============ LOGIN ============ -->
+<div id="login">
+  <form class="login-card" id="login-form">
+    <div class="mark">₿</div>
+    <h1>Crypto Agent</h1>
+    <p>Panel de seguimiento de la estrategia DCA + balas. Solo lectura: no ejecuta operaciones.</p>
+    <div class="field"><input type="email" id="email" placeholder="Email" autocomplete="username" required /></div>
+    <div class="field"><input type="password" id="password" placeholder="Contraseña" autocomplete="current-password" required /></div>
+    <button type="submit" class="btn-primary" id="login-btn">Entrar</button>
+    <div class="error" id="login-error"></div>
+  </form>
+</div>
 
-    <section>
-      <h2>Estado actual</h2>
-      <div class="cards" id="status-cards"></div>
-    </section>
-
-    <section id="compare-section">
-      <h2>Ayer vs hoy</h2>
-      <div class="cards" id="compare-cards"></div>
-    </section>
-
-    <section>
-      <h2>Ciclo de mercado (histórico completo)</h2>
-      <p class="section-note">Estos 4 gráficos usan el historial diario de BTC/USDT desde 2017 (vía Binance) y del Fear &amp; Greed Index desde 2018 (vía alternative.me) -- no dependen de cuánto tiempo lleva corriendo este agente, así que dan contexto real de en qué momento del ciclo estamos.</p>
-      <div class="chart-grid">
-        <div class="chart-box">
-          <h3>Precio BTC (USD) · histórico, escala log</h3>
-          <canvas id="chart-price-history"></canvas>
-        </div>
-        <div class="chart-box">
-          <h3>Mayer Multiple · histórico</h3>
-          <p class="chart-note">Precio actual dividido por el promedio móvil de 200 días. Históricamente &gt;2.4 marcó zonas de techo de ciclo, &lt;1 marcó zonas de piso.</p>
-          <canvas id="chart-mayer-history"></canvas>
-        </div>
-        <div class="chart-box">
-          <h3>Distancia a SMA 200 semanas (%) · histórico</h3>
-          <p class="chart-note">Cuánto está el precio por encima/debajo de su promedio de 200 semanas (~4 años). Otro indicador clásico de ciclo largo.</p>
-          <canvas id="chart-sma200w-history"></canvas>
-        </div>
-        <div class="chart-box">
-          <h3>Fear &amp; Greed Index · histórico</h3>
-          <canvas id="chart-fg-history"></canvas>
+<!-- ============ APP ============ -->
+<div id="app">
+  <div class="topbar">
+    <div class="wrap topbar-in">
+      <div class="brand">
+        <div class="mark sm">₿</div>
+        <div>
+          <b>Crypto Agent</b>
+          <span id="last-updated">—</span>
         </div>
       </div>
-    </section>
-
-    <section>
-      <h2>Muy reciente</h2>
-      <div class="chart-grid">
-        <div class="chart-box"><h3>Precio BTC (USD) · cada 15 min</h3><canvas id="chart-price"></canvas></div>
-        <div class="chart-box">
-          <h3>Dominancia BTC (%)</h3>
-          <p class="chart-note">Solo acumula desde que corre este agente -- se va a ir extendiendo día a día. No encontré una fuente histórica gratuita confiable para dominancia.</p>
-          <canvas id="chart-dominance"></canvas>
-        </div>
+      <div class="spacer"></div>
+      <div class="price-pill" id="price-pill">
+        <span class="dot stale" id="live-dot"></span>
+        <span class="p mono" id="live-price">—</span>
+        <span class="c mono" id="live-change"></span>
       </div>
-    </section>
-
-    <section>
-      <h2>Compras DCA (spot, manual)</h2>
-      <p class="section-note">Compras reales de BTC que registrás vos a mano con <code>main.py buy</code>. Es capital real, distinto del que se usa en las balas.</p>
-      <div class="table-wrap" id="dca-table"></div>
-    </section>
-
-    <section>
-      <h2>Balas (BingX Demo, apalancado)</h2>
-      <p class="section-note">Trading apalancado en la cuenta Demo/VST de BingX (dinero virtual, no real). Las balas se acumulan por ronda: hasta 30 por ronda, se abre como máximo 1 nueva por día, y cuando la posición combinada llega a +15% se cierran todas juntas y arranca una ronda nueva.</p>
-      <div class="table-wrap" id="bullets-table"></div>
-    </section>
-
-    <section>
-      <h2>Último informe generado</h2>
-      <div class="report-text" id="report-text"></div>
-    </section>
-
-    <div class="disclaimer">
-      Este dashboard solo muestra datos. No ejecuta operaciones ni da señales de compra/venta.
-      Todas las decisiones y ejecuciones son manuales, a cargo del usuario.
+      <button class="icon-btn" id="refresh-btn" title="Recargar datos" aria-label="Recargar">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>
+      </button>
+      <button class="icon-btn" id="logout-btn" title="Cerrar sesión" aria-label="Cerrar sesión">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
+      </button>
     </div>
   </div>
 
-  <script>
-    // ============ CONFIG ============
-    // The anon (publishable) key is SAFE to expose in frontend code: it has no
-    // power on its own -- Row Level Security (supabase/security.sql) gates it so
-    // that only a logged-in session can read anything. NEVER put the
-    // service_role key here; that one bypasses all security.
-    const SUPABASE_URL = "https://iofyjtqahwyqzrehomxy.supabase.co";
-    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlvZnlqdHFhaHd5cXpyZWhvbXh5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQwNTMyODMsImV4cCI6MjA5OTYyOTI4M30.pDedkcJrzIwf0ncs-fmqCTydgkHBmxVpGuEY6Q04cNg";
+  <div class="wrap">
+    <!-- ---- HERO ---- -->
+    <div class="hero">
+      <div class="hero-main">
+        <div class="eyebrow">Patrimonio total estimado</div>
+        <div class="hero-value" id="hero-total">—</div>
+        <div class="hero-delta" id="hero-delta"></div>
+        <div class="split">
+          <div class="split-bar" id="split-bar"></div>
+          <div class="split-legend" id="split-legend"></div>
+        </div>
+      </div>
+      <div class="hero-side">
+        <div class="gauge-card">
+          <div class="eyebrow">Fear &amp; Greed</div>
+          <div id="gauge-fg"></div>
+          <div class="gauge-val" id="fg-value">—</div>
+          <div class="gauge-sub" id="fg-label">sin datos</div>
+        </div>
+        <div class="gauge-card">
+          <div class="eyebrow">Mayer Multiple</div>
+          <div id="gauge-mayer"></div>
+          <div class="gauge-val" id="mayer-value">—</div>
+          <div class="gauge-sub" id="mayer-label">precio ÷ SMA200d</div>
+        </div>
+      </div>
+    </div>
 
-    const db = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    <!-- ---- TABS ---- -->
+    <nav class="tabs" id="tabs">
+      <button class="tab active" data-tab="resumen">Resumen</button>
+      <button class="tab" data-tab="ciclo">Ciclo de mercado</button>
+      <button class="tab" data-tab="dca">DCA <span class="count" id="cnt-dca">0</span></button>
+      <button class="tab" data-tab="balas">Balas <span class="count" id="cnt-bullets">0</span></button>
+      <button class="tab" data-tab="informe">Informe</button>
+    </nav>
 
-    const $ = (id) => document.getElementById(id);
-    const charts = {};
+    <!-- ---- PANEL: RESUMEN ---- -->
+    <div class="panel active" id="panel-resumen">
+      <div class="grid-2">
+        <div class="block">
+          <div class="block-head"><h3>DCA · spot</h3><span class="tag real">dinero real</span></div>
+          <div class="block-body">
+            <div class="stats" id="dca-stats"></div>
+            <p class="note mt">BTC comprado de forma recurrente y sostenido a largo plazo. Puede estar en Nexo generando APR entre compras, así que el saldo del wallet spot de BingX no representa esta posición.</p>
+          </div>
+        </div>
+        <div class="block">
+          <div class="block-head"><h3>Balas · futuros apalancados</h3><span class="tag demo">demo / VST</span></div>
+          <div class="block-body">
+            <div class="stats" id="bullets-stats"></div>
+            <div id="round-progress"></div>
+          </div>
+        </div>
+      </div>
 
-    // Cross-cutting data kept in memory so the live-price refresh (every
-    // 30s) can recompute price-dependent cards without re-querying
-    // Supabase each time. Populated once per full loadData() call.
-    let cache = { snaps: [], dca: [], bullets: [], account: null };
-    let livePrice = null;
-    let liveChange24h = null;
+      <div class="grid-2 mt">
+        <div class="chart-box">
+          <h4>Precio BTC <span class="chip" id="chip-recent">15 min</span></h4>
+          <p class="sub">Serie intradiaria escrita por el agente cada 15 minutos.</p>
+          <canvas id="chart-price"></canvas>
+        </div>
+        <div class="chart-box">
+          <h4>Dominancia BTC <span class="chip" id="chip-dom">%</span></h4>
+          <p class="sub">Solo acumula desde que corre este agente — se extiende día a día. No hay fuente histórica gratuita confiable para dominancia.</p>
+          <canvas id="chart-dominance"></canvas>
+        </div>
+      </div>
 
-    // ---- number/format helpers ----
-    const fmtUsd = (n) => n == null ? "—" : "$" + Number(n).toLocaleString("es-AR",
-      { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    const fmtPct = (n) => n == null ? "—" : (n >= 0 ? "+" : "") + Number(n).toFixed(2) + "%";
-    const fmtNum = (n, d = 2) => n == null ? "—" : Number(n).toFixed(d);
-    const clsSign = (n) => n == null ? "" : (n >= 0 ? "pos" : "neg");
-    const fmtDate = (s) => s ? new Date(s).toLocaleDateString("es-AR",
-      { day: "2-digit", month: "short", year: "numeric" }) : "—";
-    const fmtDateTime = (s) => s ? new Date(s).toLocaleString("es-AR",
-      { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
+      <div class="block mt" id="compare-block">
+        <div class="block-head"><h3>Variación respecto a ayer</h3></div>
+        <div class="block-body"><div class="stats wide" id="compare-stats"></div></div>
+      </div>
+    </div>
 
-    // ============ AUTH ============
-    $("login-form").addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const btn = $("login-btn");
-      btn.disabled = true;
-      $("login-error").textContent = "";
-      const { error } = await db.auth.signInWithPassword({
-        email: $("email").value.trim(),
-        password: $("password").value,
-      });
-      btn.disabled = false;
-      if (error) {
-        $("login-error").textContent = "No se pudo iniciar sesión: " + error.message;
-        return;
+    <!-- ---- PANEL: CICLO ---- -->
+    <div class="panel" id="panel-ciclo">
+      <p class="note">Historial diario completo de BTC/USDT desde 2017 (Binance) y del Fear &amp; Greed Index desde 2018 (alternative.me). No dependen de cuánto tiempo lleva corriendo el agente, así que dan contexto real de en qué momento del ciclo estamos.</p>
+      <div class="grid-2x2">
+        <div class="chart-box">
+          <h4>Precio BTC · escala logarítmica</h4>
+          <p class="sub">Todo el historial disponible. La escala log hace comparables los ciclos entre sí.</p>
+          <canvas id="chart-price-history"></canvas>
+        </div>
+        <div class="chart-box">
+          <h4>Mayer Multiple <span class="chip" id="chip-mayer">—</span></h4>
+          <p class="sub">Precio ÷ promedio móvil de 200 días. Históricamente &gt;2.4 marcó zonas de techo de ciclo y &lt;1 zonas de piso.</p>
+          <canvas id="chart-mayer-history"></canvas>
+        </div>
+        <div class="chart-box">
+          <h4>Distancia a la SMA de 200 semanas <span class="chip" id="chip-200w">—</span></h4>
+          <p class="sub">Cuánto está el precio por encima o debajo de su promedio de ~4 años. Indicador clásico de ciclo largo.</p>
+          <canvas id="chart-sma200w-history"></canvas>
+        </div>
+        <div class="chart-box">
+          <h4>Fear &amp; Greed Index · histórico</h4>
+          <p class="sub">Sentimiento agregado del mercado, 0 = miedo extremo, 100 = codicia extrema.</p>
+          <canvas id="chart-fg-history"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---- PANEL: DCA ---- -->
+    <div class="panel" id="panel-dca">
+      <div class="block">
+        <div class="block-head">
+          <h3>Compras DCA</h3><span class="tag real">dinero real</span>
+          <div class="spacer"></div>
+          <span class="chip" id="dca-total-chip">—</span>
+        </div>
+        <div class="block-body">
+          <p class="note">Compras de BTC sincronizadas automáticamente desde tu cuenta spot de BingX, más las que registres a mano con <code>main.py buy</code>. Los precios ya vienen ajustados por la comisión del exchange (precio efectivo), así que el P&amp;L de abajo es neto.</p>
+        </div>
+        <div class="table-scroll" id="dca-table"></div>
+      </div>
+    </div>
+
+    <!-- ---- PANEL: BALAS ---- -->
+    <div class="panel" id="panel-balas">
+      <div class="block">
+        <div class="block-head">
+          <h3>Balas por ronda</h3><span class="tag demo">demo / VST</span>
+          <div class="spacer"></div>
+          <span class="chip" id="bullets-total-chip">—</span>
+        </div>
+        <div class="block-body">
+          <p class="note">Trading apalancado sobre la cuenta Demo/VST de BingX (dinero virtual). Las balas se acumulan por ronda: hasta 30 por ronda, máximo 1 nueva por día, y cuando la posición combinada llega a +15% se cierran todas juntas y arranca una ronda nueva. El P&amp;L de las balas abiertas es no realizado y se recalcula con el precio en vivo.</p>
+        </div>
+        <div class="table-scroll" id="bullets-table"></div>
+      </div>
+    </div>
+
+    <!-- ---- PANEL: INFORME ---- -->
+    <div class="panel" id="panel-informe">
+      <div id="report-latest"></div>
+      <div class="block mt" id="archive-block">
+        <div class="block-head"><h3>Informes anteriores</h3></div>
+        <div id="report-archive"></div>
+      </div>
+    </div>
+
+    <div class="disclaimer">
+      Este dashboard solo muestra datos. No ejecuta operaciones ni da señales de compra/venta.<br />
+      Todas las decisiones y ejecuciones son manuales, a cargo del usuario.
+    </div>
+  </div>
+</div>
+
+<script>
+// ============ CONFIG ============
+// The anon (publishable) key is SAFE to expose in frontend code: it has no
+// power on its own -- Row Level Security (supabase/security.sql) gates it so
+// that only a logged-in session can read anything. NEVER put the
+// service_role key here; that one bypasses all security.
+const SUPABASE_URL = "https://iofyjtqahwyqzrehomxy.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlvZnlqdHFhaHd5cXpyZWhvbXh5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQwNTMyODMsImV4cCI6MjA5OTYyOTI4M30.pDedkcJrzIwf0ncs-fmqCTydgkHBmxVpGuEY6Q04cNg";
+
+const db = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+const $ = (id) => document.getElementById(id);
+const charts = {};
+const MAX_BULLETS_PER_ROUND = 30;
+const TARGET_GAIN_PCT = 15;
+
+// Cross-cutting data kept in memory so the live-price refresh (every 30s)
+// can recompute price-dependent views without re-querying Supabase each
+// time. Populated once per full loadData() call.
+let cache = { snaps: [], dca: [], bullets: [], ticks: [], account: null, cycle: null };
+let livePrice = null;
+let liveChange24h = null;
+let cycleChartsBuilt = false;
+
+// ---- number/format helpers ----
+// Sign goes BEFORE the currency symbol ("-$1,51", not "$-1,51") -- the
+// default toLocaleString placement reads as a typo in a P&L column.
+const money = (n, d) => {
+  if (n == null || isNaN(n)) return "—";
+  const s = Number(n) < 0 ? "-" : "";
+  return s + "$" + Math.abs(Number(n)).toLocaleString("es-AR",
+    { minimumFractionDigits: d, maximumFractionDigits: d });
+};
+const fmtUsd  = (n) => money(n, 2);
+const fmtUsd0 = (n) => money(n, 0);
+const fmtPct = (n) => n == null || isNaN(n) ? "—" : (n >= 0 ? "+" : "") + Number(n).toFixed(2) + "%";
+const fmtNum = (n, d = 2) => n == null || isNaN(n) ? "—" : Number(n).toFixed(d);
+const clsSign = (n) => n == null || isNaN(n) ? "" : (n >= 0 ? "pos" : "neg");
+const fmtDate = (s) => s ? new Date(s).toLocaleDateString("es-AR",
+  { day: "2-digit", month: "short", year: "numeric" }) : "—";
+const fmtDateShort = (s) => s ? new Date(s).toLocaleDateString("es-AR",
+  { day: "2-digit", month: "short" }) : "—";
+const fmtDateTime = (s) => s ? new Date(s).toLocaleString("es-AR",
+  { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
+
+// ============ AUTH ============
+$("login-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = $("login-btn");
+  btn.disabled = true;
+  $("login-error").textContent = "";
+  const { error } = await db.auth.signInWithPassword({
+    email: $("email").value.trim(),
+    password: $("password").value,
+  });
+  btn.disabled = false;
+  if (error) {
+    $("login-error").textContent = "No se pudo iniciar sesión: " + error.message;
+    return;
+  }
+  showDashboard();
+});
+
+$("logout-btn").addEventListener("click", async () => {
+  await db.auth.signOut();
+  $("app").style.display = "none";
+  $("login").style.display = "flex";
+});
+
+$("refresh-btn").addEventListener("click", async () => {
+  const btn = $("refresh-btn");
+  btn.classList.add("spin");
+  cycleChartsBuilt = false;
+  await loadData();
+  await loadMarketCycleData();
+  if ($("panel-ciclo").classList.contains("active")) buildCycleCharts();
+  btn.classList.remove("spin");
+});
+
+async function init() {
+  const { data: { session } } = await db.auth.getSession();
+  if (session) showDashboard();
+}
+
+async function showDashboard() {
+  $("login").style.display = "none";
+  $("app").style.display = "block";
+  restoreTab();
+  await loadData();
+  // Market cycle data (full BTC + Fear&Greed history) is slow-moving and
+  // comes from separate, heavier public APIs -- fetched once here, not on
+  // every 30s live-price tick. The *charts* are only built when its tab
+  // is first opened, but the *data* is needed right away for the hero
+  // gauges (a Mayer computed from today's Binance close is fresher than
+  // the one stored in the last daily snapshot).
+  loadMarketCycleData();
+  // Live price alone refreshes independently and more often -- it's a
+  // single free public request, no reason to wait 15 minutes for it.
+  setInterval(refreshLivePrice, 30000);
+}
+
+// ============ TABS ============
+// Chart.js sizes a canvas to its parent at construction time, so a canvas
+// inside a display:none panel would render 1px wide. Every activation
+// resizes whatever just became visible, and the cycle charts are built
+// lazily the first time their tab is opened.
+function showTab(name) {
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === name));
+  document.querySelectorAll(".panel").forEach(p => p.classList.toggle("active", p.id === "panel-" + name));
+  if (name === "ciclo" && !cycleChartsBuilt) buildCycleCharts();
+  requestAnimationFrame(() => Object.values(charts).forEach(c => { try { c.resize(); } catch (e) {} }));
+  try { localStorage.setItem("ca_tab", name); } catch (e) {}
+}
+document.querySelectorAll(".tab").forEach(t =>
+  t.addEventListener("click", () => showTab(t.dataset.tab)));
+
+function restoreTab() {
+  let saved = null;
+  try { saved = localStorage.getItem("ca_tab"); } catch (e) {}
+  if (saved && $("panel-" + saved)) showTab(saved);
+}
+
+// ---- Live price: fetched directly from the browser, bypassing Supabase
+// and the backend entirely. This is what makes the price pill and the
+// portfolio valuation genuinely real-time instead of only as fresh as the
+// last daily report. CoinGecko's public endpoint needs no API key and
+// allows browser CORS requests.
+async function refreshLivePrice() {
+  try {
+    const res = await fetch(
+      "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true"
+    );
+    const data = await res.json();
+    livePrice = data.bitcoin.usd;
+    liveChange24h = data.bitcoin.usd_24h_change;
+  } catch (e) {
+    // Best-effort: if CoinGecko is unreachable, keep showing the last
+    // known live price (or fall back to the snapshot price in render).
+    console.warn("Live price fetch failed:", e);
+  }
+  renderAll();
+}
+
+// ============ DATA ============
+async function loadData() {
+  const [snapsRes, dcaRes, bulletsRes, ticksRes, accountRes] = await Promise.all([
+    db.from("daily_snapshots").select("*").order("created_at", { ascending: true }),
+    db.from("dca_purchases").select("*").order("purchased_at", { ascending: true }),
+    db.from("bullets").select("*")
+      .order("round_number", { ascending: true })
+      .order("bullet_number", { ascending: true }),
+    db.from("price_ticks").select("*").order("created_at", { ascending: true }).limit(1000),
+    db.from("account_ticks").select("*").order("created_at", { ascending: false }).limit(1),
+    refreshLivePrice(),
+  ]);
+
+  cache.snaps   = snapsRes.data   || [];
+  cache.dca     = dcaRes.data     || [];
+  cache.bullets = bulletsRes.data || [];
+  cache.ticks   = ticksRes.data   || [];
+  cache.account = (accountRes.data && accountRes.data[0]) || null;
+
+  $("cnt-dca").textContent = cache.dca.length;
+  $("cnt-bullets").textContent = cache.bullets.length;
+
+  renderAll();
+  renderRecentCharts();
+}
+
+// Every price-dependent view, recomputed together. Called on full loads
+// and on each 30s live-price tick.
+function renderAll() {
+  const m = deriveMetrics();
+  renderHero(m);
+  renderDcaStats(m);
+  renderBulletsStats(m);
+  renderCompare(cache.snaps);
+  renderDcaTable(m);
+  renderBulletsTable(m);
+  renderReports(cache.snaps);
+  renderStatusLine(m);
+}
+
+// One place that turns raw rows into every number the UI shows, so the
+// cards, the tables and the hero can never disagree with each other.
+function deriveMetrics() {
+  const snaps = cache.snaps, dca = cache.dca, bullets = cache.bullets;
+  const last = snaps[snaps.length - 1] || {};
+
+  // Live price (from the browser) wins over the last daily snapshot
+  // whenever it's available -- that's the whole point of fetching it.
+  const price = livePrice ?? last.price ?? null;
+  const change24h = livePrice != null ? liveChange24h : last.change_24h_pct;
+  const isLive = livePrice != null;
+
+  // Computed live from dca_purchases itself (auto-synced from your REAL
+  // BingX spot trades every 15 min -- see src/dca.py), not from
+  // daily_snapshots, for freshness. Value is computed from the BTC you've
+  // bought regardless of where it physically sits: you rotate it to Nexo
+  // for yield between weekly DCA buys, so the BingX spot wallet itself is
+  // NOT a meaningful "money in account" figure here.
+  const totalQtyBtc  = dca.reduce((s, p) => s + (p.amount_usd / p.price), 0);
+  const totalInvested = dca.reduce((s, p) => s + Number(p.amount_usd), 0);
+  const dcaValue = price != null ? price * totalQtyBtc : null;
+  const dcaPnl   = dcaValue != null ? dcaValue - totalInvested : null;
+  const dcaPnlPct = totalInvested ? (dcaPnl / totalInvested * 100) : null;
+  const avgEntry = totalQtyBtc ? totalInvested / totalQtyBtc : null;
+
+  // "Balance cuenta demo (VST)": the BingX Demo Trading account's own
+  // reported total balance -- straight from the exchange, via
+  // account_ticks (written every 15 min by bullet-check). This is the
+  // capital testing the bullets strategy right now, NOT real money.
+  const vstTotal = cache.account ? Number(cache.account.vst_total) : null;
+
+  // Everything below is computed live from the "bullets" table itself
+  // (synced every 15 min by bullet-check), NOT from daily_snapshots --
+  // daily_snapshots only gets one row/day from the full report, so relying
+  // on it here made these numbers look stale for hours.
+  const active = bullets.filter(b => b.status === "open" || b.status === "tracking");
+  const closed = bullets.filter(b => (b.status || "").startsWith("closed"));
+  const roundOutcomes = {};
+  for (const b of closed) roundOutcomes[b.round_number] = b.status;
+  const roundsCompleted = Object.keys(roundOutcomes).length;
+  const tpRounds = Object.values(roundOutcomes).filter(s => s === "closed_tp").length;
+  const realizedPnl = closed.reduce((s, b) => s + (Number(b.realized_pnl_usd) || 0), 0);
+  const currentRound = active.length
+    ? active[0].round_number
+    : bullets.reduce((max, b) => Math.max(max, b.round_number || 0), 0);
+
+  // Bullets accumulate: the +15% target is evaluated on the COMBINED
+  // position across every active bullet, not per bullet. Sum unrealized
+  // P&L and collateral across all of them for the combined gain %.
+  let combinedPnl = 0, combinedGainPct = 0, combinedCollateral = 0, targetPrice = null;
+  if (active.length && price != null) {
+    let sumCoverEntry = 0, leverage = active[0].leverage || 1;
+    for (const b of active) {
+      const positionGainPct = (price - b.entry_price) / b.entry_price * 100 * b.leverage;
+      combinedCollateral += b.collateral_usd;
+      combinedPnl += b.collateral_usd * positionGainPct / 100;
+      sumCoverEntry += b.collateral_usd / b.entry_price;
+    }
+    combinedGainPct = combinedCollateral ? (combinedPnl / combinedCollateral * 100) : 0;
+    // Price at which the combined gain hits the target, solving the same
+    // formula used just above for combinedGainPct (so the bar and the
+    // number can't drift apart).
+    if (sumCoverEntry > 0) {
+      targetPrice = (combinedCollateral * (TARGET_GAIN_PCT / 100) / leverage + combinedCollateral) / sumCoverEntry;
+    }
+  }
+
+  // "Patrimonio total": real DCA value plus the demo VST balance -- one
+  // number to eyeball where things stand, but the split bar underneath
+  // keeps them distinguishable, since the VST leg is virtual testing
+  // money, not real.
+  const totalPortfolio = (dcaValue ?? 0) + (vstTotal ?? 0);
+
+  return {
+    last, price, change24h, isLive,
+    totalQtyBtc, totalInvested, dcaValue, dcaPnl, dcaPnlPct, avgEntry,
+    vstTotal, totalPortfolio,
+    active, closed, roundsCompleted, tpRounds, realizedPnl, currentRound,
+    combinedPnl, combinedGainPct, combinedCollateral, targetPrice,
+  };
+}
+
+function renderStatusLine(m) {
+  $("live-price").textContent = m.price != null ? fmtUsd(m.price) : "—";
+  const chg = $("live-change");
+  chg.textContent = fmtPct(m.change24h);
+  chg.className = "c mono " + clsSign(m.change24h);
+  $("live-dot").className = "dot " + (m.isLive ? "live" : "stale");
+  $("last-updated").textContent = m.isLive
+    ? "en vivo · " + new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })
+    : (cache.snaps.length ? "últ. snapshot " + fmtDateTime(m.last.created_at) : "sin datos todavía");
+}
+
+// ============ HERO ============
+function renderHero(m) {
+  $("hero-total").textContent = fmtUsd(m.totalPortfolio);
+
+  // The headline delta is the REAL money result: DCA unrealized P&L. The
+  // demo VST leg is virtual, so folding it into a single "profit" figure
+  // would be misleading.
+  const d = $("hero-delta");
+  if (m.dcaPnl != null) {
+    d.innerHTML = `<span class="${clsSign(m.dcaPnl)}">${fmtUsd(m.dcaPnl)} (${fmtPct(m.dcaPnlPct)})</span>` +
+      `<span class="dim"> · resultado no realizado del DCA</span>`;
+  } else { d.textContent = ""; }
+
+  const dcaV = m.dcaValue ?? 0, vstV = m.vstTotal ?? 0, tot = dcaV + vstV;
+  const parts = [
+    { label: "DCA real (BTC)", v: dcaV, color: "var(--or)" },
+    { label: "Demo BingX (VST)", v: vstV, color: "var(--bl)" },
+  ].filter(p => p.v > 0);
+
+  $("split-bar").innerHTML = tot > 0
+    ? parts.map(p => `<i style="width:${(p.v / tot * 100).toFixed(2)}%;background:${p.color}"></i>`).join("")
+    : `<i style="width:100%;background:var(--surface-3)"></i>`;
+  $("split-legend").innerHTML = parts.map(p =>
+    `<div><span class="swatch" style="background:${p.color}"></span>${p.label}
+       <b class="mono" style="color:var(--tx)">${fmtUsd0(p.v)}</b></div>`).join("");
+
+  renderFgGauge(m.last.fear_greed_value, m.last.fear_greed_classification);
+  // Prefer the Mayer recomputed from today's Binance close (loaded with
+  // the cycle data) over the one frozen into the last daily snapshot.
+  renderMayerGauge(cache.cycle?.mayerNow ?? m.last.mayer_multiple);
+}
+
+// ---- SVG gauges. Hand-drawn arcs: no extra chart library, and they read
+// far better than a bare number for "where in the range are we".
+function arcPath(cx, cy, r, a0, a1) {
+  const pt = (deg) => {
+    const rad = (deg - 180) * Math.PI / 180;   // 0deg = left, 180deg = right
+    return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)];
+  };
+  const [x0, y0] = pt(a0), [x1, y1] = pt(a1);
+  return `M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${r} ${r} 0 ${(a1 - a0) > 180 ? 1 : 0} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
+}
+
+function renderFgGauge(value, classification) {
+  const v = value == null ? null : Math.max(0, Math.min(100, Number(value)));
+  const zones = [
+    [0, 25, "#F6465D"], [25, 45, "#F7931A"], [45, 55, "#E3B341"],
+    [55, 75, "#7FD1A0"], [75, 100, "#2EBD85"],
+  ];
+  const cx = 74, cy = 62, r = 52;
+  const arcs = zones.map(([a, b, c]) =>
+    `<path d="${arcPath(cx, cy, r, a * 1.8, b * 1.8)}" stroke="${c}" stroke-width="9"
+       fill="none" stroke-linecap="round" opacity="${v == null ? .18 : (v >= a && v <= b ? 1 : .22)}"/>`).join("");
+  let needle = "";
+  if (v != null) {
+    const rad = (v * 1.8 - 180) * Math.PI / 180;
+    const x = cx + (r - 15) * Math.cos(rad), y = cy + (r - 15) * Math.sin(rad);
+    needle = `<line x1="${cx}" y1="${cy}" x2="${x.toFixed(2)}" y2="${y.toFixed(2)}"
+                stroke="#E8ECF2" stroke-width="2.5" stroke-linecap="round"/>
+              <circle cx="${cx}" cy="${cy}" r="4" fill="#E8ECF2"/>`;
+  }
+  $("gauge-fg").innerHTML = `<svg width="148" height="76" viewBox="0 0 148 76">${arcs}${needle}</svg>`;
+  $("fg-value").textContent = v == null ? "—" : v;
+  $("fg-value").style.color = v == null ? "var(--tx-3)"
+    : (v >= 55 ? "var(--gr)" : v <= 45 ? "var(--rd)" : "var(--yl)");
+  $("fg-label").textContent = classification || (v == null ? "sin datos" : "");
+}
+
+function renderMayerGauge(value) {
+  // Fixed 0–3 scale: 2.4 is the classic cycle-top threshold and 1.0 the
+  // floor one, so both live comfortably inside the visible range.
+  const v = value == null ? null : Number(value);
+  const MAXV = 3;
+  const pos = v == null ? null : Math.max(0, Math.min(180, v / MAXV * 180));
+  const cx = 74, cy = 62, r = 52;
+  const seg = (a, b, c, on) =>
+    `<path d="${arcPath(cx, cy, r, a / MAXV * 180, b / MAXV * 180)}" stroke="${c}"
+       stroke-width="9" fill="none" stroke-linecap="round" opacity="${on ? 1 : .22}"/>`;
+  const zone = v == null ? -1 : (v < 1 ? 0 : v < 2.4 ? 1 : 2);
+  const arcs = seg(0, 1, "#2EBD85", zone === 0) + seg(1, 2.4, "#E3B341", zone === 1) + seg(2.4, 3, "#F6465D", zone === 2);
+  let needle = "";
+  if (pos != null) {
+    const rad = (pos - 180) * Math.PI / 180;
+    const x = cx + (r - 15) * Math.cos(rad), y = cy + (r - 15) * Math.sin(rad);
+    needle = `<line x1="${cx}" y1="${cy}" x2="${x.toFixed(2)}" y2="${y.toFixed(2)}"
+                stroke="#E8ECF2" stroke-width="2.5" stroke-linecap="round"/>
+              <circle cx="${cx}" cy="${cy}" r="4" fill="#E8ECF2"/>`;
+  }
+  $("gauge-mayer").innerHTML = `<svg width="148" height="76" viewBox="0 0 148 76">${arcs}${needle}</svg>`;
+  $("mayer-value").textContent = v == null ? "—" : fmtNum(v, 2);
+  $("mayer-value").style.color = zone === 2 ? "var(--rd)" : zone === 0 ? "var(--gr)" : "var(--tx)";
+  $("mayer-label").textContent = v == null ? "precio ÷ SMA200d"
+    : zone === 2 ? "zona históricamente de techo" : zone === 0 ? "zona históricamente de piso" : "rango intermedio";
+}
+
+// ============ STAT BLOCKS ============
+const statHtml = (s) => `
+  <div class="stat">
+    <div class="l">${s.l}</div>
+    <div class="v ${s.vCls || ""}">${s.v}</div>
+    <div class="s ${s.sCls || ""}">${s.s || "&nbsp;"}</div>
+  </div>`;
+
+function renderDcaStats(m) {
+  $("dca-stats").innerHTML = [
+    { l: "Valor actual", v: fmtUsd(m.dcaValue), s: fmtNum(m.totalQtyBtc, 8) + " BTC" },
+    { l: "Invertido", v: fmtUsd(m.totalInvested), s: cache.dca.length + " compra(s)" },
+    { l: "Resultado", v: fmtUsd(m.dcaPnl), vCls: clsSign(m.dcaPnl), s: fmtPct(m.dcaPnlPct), sCls: clsSign(m.dcaPnl) },
+    { l: "Precio medio", v: fmtUsd(m.avgEntry),
+      s: m.price != null && m.avgEntry ? fmtPct((m.price / m.avgEntry - 1) * 100) + " vs. spot" : "",
+      sCls: m.price != null && m.avgEntry ? clsSign(m.price - m.avgEntry) : "" },
+  ].map(statHtml).join("");
+  $("dca-total-chip").textContent = fmtUsd0(m.totalInvested) + " invertidos";
+}
+
+function renderBulletsStats(m) {
+  const used = m.active.length;
+  $("bullets-stats").innerHTML = [
+    { l: "Balance demo (VST)", v: m.vstTotal != null ? fmtUsd(m.vstTotal) : "—", s: "capital de prueba" },
+    { l: "P&L realizado", v: fmtUsd(m.realizedPnl), vCls: clsSign(m.realizedPnl),
+      s: `${m.roundsCompleted} ronda(s) · ${m.tpRounds} en TP` },
+    { l: `Ronda ${m.currentRound || "—"}`, v: used + " / " + MAX_BULLETS_PER_ROUND,
+      s: (MAX_BULLETS_PER_ROUND - used) + " balas disponibles" },
+    { l: "P&L en curso", v: used ? fmtUsd(m.combinedPnl) : "—", vCls: used ? clsSign(m.combinedPnl) : "",
+      s: used ? fmtPct(m.combinedGainPct) + " combinado" : "sin balas abiertas",
+      sCls: used ? clsSign(m.combinedPnl) : "" },
+  ].map(statHtml).join("");
+  $("bullets-total-chip").textContent = m.active.length
+    ? `${m.active.length} abierta(s) · ronda ${m.currentRound}` : "sin balas abiertas";
+
+  renderRoundProgress(m);
+}
+
+// Two visuals that a bare number can't convey: how much of the 30-bullet
+// budget this round has burned, and how far the combined position is from
+// the +15% that closes it.
+function renderRoundProgress(m) {
+  const box = $("round-progress");
+  if (!m.active.length) {
+    box.innerHTML = `<p class="note mt">La ronda arranca cuando se abre la primera bala. Máximo 1 por día.</p>`;
+    return;
+  }
+  const used = m.active.length;
+  const segs = Array.from({ length: MAX_BULLETS_PER_ROUND },
+    (_, i) => `<i class="${i < used ? "on" : ""}"></i>`).join("");
+
+  // Track spans -15%..+15%; zero sits in the middle, the goal flag at the
+  // right end. Clamped so an extreme reading can't overflow the box.
+  const SPAN = 15;
+  const g = Math.max(-SPAN, Math.min(SPAN, m.combinedGainPct));
+  const toPct = (x) => ((x + SPAN) / (SPAN * 2) * 100);
+  const zeroPos = toPct(0), curPos = toPct(g);
+  const fillLeft = Math.min(zeroPos, curPos), fillWidth = Math.abs(curPos - zeroPos);
+  const color = m.combinedGainPct >= 0 ? "var(--gr)" : "var(--rd)";
+
+  box.innerHTML = `
+    <div class="eyebrow mt" style="margin-bottom:2px">Balas usadas en la ronda ${m.currentRound}</div>
+    <div class="segs">${segs}</div>
+    <div class="row" style="justify-content:space-between">
+      <span class="note" style="margin:0">${used} de ${MAX_BULLETS_PER_ROUND} · las restantes son el margen para seguir recargando si el precio baja</span>
+    </div>
+    <div class="eyebrow" style="margin-top:18px">Avance hacia el objetivo de la ronda</div>
+    <div class="track">
+      <div class="track-bg"></div>
+      <div class="track-fill" style="left:${fillLeft}%;width:${fillWidth}%;background:${color}"></div>
+      <div class="track-zero" style="left:${zeroPos}%"></div>
+      <div class="track-mark" style="left:${curPos}%"></div>
+      <div class="track-goal" style="left:100%">+15%</div>
+    </div>
+    <div class="row" style="justify-content:space-between">
+      <span class="note mono ${clsSign(m.combinedGainPct)}" style="margin:0">${fmtPct(m.combinedGainPct)} combinado</span>
+      <span class="note" style="margin:0">cierra en <b class="mono" style="color:var(--tx)">${fmtUsd0(m.targetPrice)}</b></span>
+    </div>`;
+}
+
+function renderCompare(snaps) {
+  const block = $("compare-block");
+  if (snaps.length < 2) { block.style.display = "none"; return; }
+  block.style.display = "block";
+  const today = snaps[snaps.length - 1], yday = snaps[snaps.length - 2];
+  const delta = (a, b) => (a == null || b == null) ? null : a - b;
+
+  const rows = [
+    { l: "Precio BTC", d: delta(today.price, yday.price), f: fmtUsd0 },
+    { l: "Fear & Greed", d: delta(today.fear_greed_value, yday.fear_greed_value), f: (n) => (n >= 0 ? "+" : "") + n },
+    { l: "Mayer Multiple", d: delta(today.mayer_multiple, yday.mayer_multiple), f: (n) => (n >= 0 ? "+" : "") + fmtNum(n, 3) },
+    { l: "Dominancia BTC", d: delta(today.btc_dominance_pct, yday.btc_dominance_pct), f: (n) => fmtPct(n) },
+  ];
+  $("compare-stats").innerHTML = rows.map(r => statHtml({
+    l: r.l, v: r.d == null ? "—" : r.f(r.d), vCls: clsSign(r.d), s: "vs. ayer",
+  })).join("");
+}
+
+// ============ TABLES ============
+function renderDcaTable(m) {
+  const dca = cache.dca;
+  if (!dca.length) {
+    $("dca-table").innerHTML = `<div class="empty"><span class="big">◎</span>Sin compras DCA registradas todavía.</div>`;
+    return;
+  }
+  // Newest first: the recent purchases are the ones you actually check.
+  const rows = [...dca].reverse().map(p => {
+    const btc = p.amount_usd / p.price;
+    const val = m.price != null ? btc * m.price : null;
+    const pnl = val != null ? val - Number(p.amount_usd) : null;
+    const pnlPct = pnl != null ? pnl / Number(p.amount_usd) * 100 : null;
+    return `<tr>
+      <td>${fmtDate(p.purchased_at)}</td>
+      <td class="num">${fmtUsd(p.amount_usd)}</td>
+      <td class="num">${fmtUsd0(p.price)}</td>
+      <td class="num dim">${fmtNum(btc, 8)}</td>
+      <td class="num">${fmtUsd(val)}</td>
+      <td class="num ${clsSign(pnl)}">${pnl == null ? "—" : fmtUsd(pnl)}</td>
+      <td class="num ${clsSign(pnlPct)}">${fmtPct(pnlPct)}</td>
+    </tr>`;
+  }).join("");
+
+  $("dca-table").innerHTML = `
+    <table>
+      <thead><tr>
+        <th>Fecha</th><th class="num">Monto</th><th class="num">Precio efectivo</th>
+        <th class="num">BTC</th><th class="num">Valor hoy</th><th class="num">P&L</th><th class="num">%</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+function renderBulletsTable(m) {
+  const bullets = cache.bullets;
+  if (!bullets.length) {
+    $("bullets-table").innerHTML = `<div class="empty"><span class="big">◎</span>Sin balas todavía.<br />La fase de balas arranca cuando se abra la primera.</div>`;
+    return;
+  }
+  // Grouped by round, newest round first: a round is the unit that
+  // actually opens and closes together, so the table should say so.
+  const byRound = new Map();
+  for (const b of bullets) {
+    const r = b.round_number ?? 0;
+    if (!byRound.has(r)) byRound.set(r, []);
+    byRound.get(r).push(b);
+  }
+  const rounds = [...byRound.keys()].sort((a, b) => b - a);
+
+  const body = rounds.map(r => {
+    const rows = byRound.get(r);
+    const isActive = rows.some(b => b.status === "open" || b.status === "tracking");
+    const realized = rows.reduce((s, b) => s + (Number(b.realized_pnl_usd) || 0), 0);
+    const outcome = (rows.find(b => (b.status || "").startsWith("closed")) || {}).status;
+
+    const head = `<tr class="group"><td colspan="9">
+      <span class="rn">Ronda ${r}</span> · ${rows.length} bala(s) ·
+      ${isActive
+        ? `<span class="badge open">en curso</span>`
+        : `<span class="badge ${outcome || "closed_manual"}">${outcome === "closed_tp" ? "cerrada en objetivo" : "cerrada"}</span>
+           <span class="mono ${clsSign(realized)}"> ${fmtUsd(realized)}</span>`}
+    </td></tr>`;
+
+    const trs = rows.map(b => {
+      const open = b.status === "open" || b.status === "tracking";
+      // Open bullets have no realized P&L yet -- show the live unrealized
+      // one instead of a dash, marked as such so it can't be confused with
+      // a booked result.
+      let pnlCell = `<td class="num dim">—</td>`;
+      if (b.realized_pnl_usd != null) {
+        pnlCell = `<td class="num ${clsSign(b.realized_pnl_usd)}">${fmtUsd(b.realized_pnl_usd)}</td>`;
+      } else if (open && m.price != null) {
+        const u = b.collateral_usd * ((m.price - b.entry_price) / b.entry_price * b.leverage);
+        pnlCell = `<td class="num ${clsSign(u)}" title="No realizado, con precio en vivo">${fmtUsd(u)}<span class="src"> nr</span></td>`;
       }
-      showDashboard();
-    });
+      return `<tr>
+        <td class="mono dim">#${b.bullet_number}</td>
+        <td><span class="badge ${b.status}">${b.status}</span></td>
+        <td class="num">${fmtUsd(b.collateral_usd)}</td>
+        <td class="num">${fmtUsd0(b.entry_price)}</td>
+        <td class="num dim">${fmtUsd0(b.target_price)}</td>
+        <td class="num dim">${fmtUsd0(b.approx_liquidation_price)}</td>
+        <td class="num">${b.closing_price ? fmtUsd0(b.closing_price) : "—"}</td>
+        ${pnlCell}
+        <td class="src">${b.bingx_order_id ? "BingX" : "manual"}</td>
+      </tr>`;
+    }).join("");
+    return head + trs;
+  }).join("");
 
-    $("logout-btn").addEventListener("click", async () => {
-      await db.auth.signOut();
-      $("dashboard").style.display = "none";
-      $("login").style.display = "flex";
-    });
+  $("bullets-table").innerHTML = `
+    <table>
+      <thead><tr>
+        <th>#</th><th>Estado</th><th class="num">Colateral</th><th class="num">Entrada</th>
+        <th class="num">Objetivo</th><th class="num">Liq. aprox</th><th class="num">Cierre</th>
+        <th class="num">P&L</th><th>Origen</th>
+      </tr></thead>
+      <tbody>${body}</tbody>
+    </table>`;
+}
 
-    $("refresh-btn").addEventListener("click", () => { loadData(); loadMarketCycleCharts(); });
+// ============ CHARTS ============
+Chart.defaults.font.family = "'JetBrains Mono', monospace";
+Chart.defaults.font.size = 10;
+Chart.defaults.color = "#5C6673";
 
-    async function init() {
-      const { data: { session } } = await db.auth.getSession();
-      if (session) showDashboard();
-    }
+function makeChart(canvasId, labels, data, color, opts = {}) {
+  const el = $(canvasId);
+  if (!el) return;
+  if (charts[canvasId]) charts[canvasId].destroy();
 
-    async function showDashboard() {
-      $("login").style.display = "none";
-      $("dashboard").style.display = "block";
-      await loadData();
-      // Market cycle charts (full BTC + Fear&Greed history) are slow-
-      // moving and come from separate, heavier public APIs -- fetched
-      // once here, not on every 30s live-price tick or 15-min data load.
-      loadMarketCycleCharts();
-      // Live price alone refreshes independently and more often -- it's a
-      // single free public request, no reason to wait 15 minutes for it.
-      setInterval(refreshLivePrice, 30000);
-    }
+  // Vertical fade under the line -- reads as depth without adding a
+  // second visual language to the page.
+  const ctx = el.getContext("2d");
+  let fill = color + "1A";
+  try {
+    const g = ctx.createLinearGradient(0, 0, 0, 240);
+    g.addColorStop(0, color + "3D");
+    g.addColorStop(1, color + "00");
+    fill = g;
+  } catch (e) {}
 
-    // ---- Live price: fetched directly from the browser, bypassing
-    // Supabase and the backend entirely. This is what makes the "current
-    // price" card and portfolio valuation genuinely real-time instead of
-    // only as fresh as the last daily report. CoinGecko's public endpoint
-    // needs no API key and allows browser CORS requests.
-    async function refreshLivePrice() {
-      try {
-        const res = await fetch(
-          "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true"
-        );
-        const data = await res.json();
-        livePrice = data.bitcoin.usd;
-        liveChange24h = data.bitcoin.usd_24h_change;
-      } catch (e) {
-        // Best-effort: if CoinGecko is unreachable, keep showing the last
-        // known live price (or fall back to the snapshot price in render).
-        console.warn("Live price fetch failed:", e);
-      }
-      renderStatus(cache.snaps, cache.dca, cache.bullets);
-    }
-
-    // ============ DATA + RENDER ============
-    async function loadData() {
-      const [snapsRes, dcaRes, bulletsRes, ticksRes, accountRes] = await Promise.all([
-        db.from("daily_snapshots").select("*").order("created_at", { ascending: true }),
-        db.from("dca_purchases").select("*").order("purchased_at", { ascending: true }),
-        db.from("bullets").select("*")
-          .order("round_number", { ascending: true })
-          .order("bullet_number", { ascending: true }),
-        db.from("price_ticks").select("*").order("created_at", { ascending: true }).limit(1000),
-        db.from("account_ticks").select("*").order("created_at", { ascending: false }).limit(1),
-        refreshLivePrice(),
-      ]);
-
-      cache.snaps = snapsRes.data || [];
-      cache.dca = dcaRes.data || [];
-      cache.bullets = bulletsRes.data || [];
-      cache.account = (accountRes.data && accountRes.data[0]) || null;
-      const ticks = ticksRes.data || [];
-
-      renderStatus(cache.snaps, cache.dca, cache.bullets);
-      renderCompare(cache.snaps);
-      renderCharts(cache.snaps, ticks);
-      renderDcaTable(cache.dca);
-      renderBulletsTable(cache.bullets);
-      renderReport(cache.snaps);
-    }
-
-    const MAX_BULLETS_PER_ROUND = 30;
-
-    function renderStatus(snaps, dca, bullets) {
-      const last = snaps[snaps.length - 1] || {};
-      // Live price (from the browser) wins over the last daily snapshot
-      // whenever it's available -- that's the whole point of fetching it.
-      const price = livePrice ?? last.price;
-      const change24h = livePrice != null ? liveChange24h : last.change_24h_pct;
-      const isLive = livePrice != null;
-
-      // Computed live from dca_purchases itself (auto-synced from your
-      // REAL BingX spot trades every 15 min -- see src/dca.py), not from
-      // daily_snapshots, for the same freshness reason as the bullets
-      // numbers below. Value is computed from the BTC you've bought,
-      // regardless of where it physically sits: you rotate it to Nexo
-      // for yield between weekly DCA buys, so the BingX spot wallet
-      // itself is NOT a meaningful "money in account" figure here.
-      const totalQtyBtc = dca.reduce((sum, p) => sum + (p.amount_usd / p.price), 0);
-      const totalInvested = dca.reduce((sum, p) => sum + Number(p.amount_usd), 0);
-      const dcaValue = price != null ? price * totalQtyBtc : null;
-      const dcaUnrealizedGain = dcaValue != null ? dcaValue - totalInvested : null;
-
-      // "Balance cuenta demo (VST)": the BingX Demo Trading account's own
-      // reported total balance -- straight from the exchange, via
-      // account_ticks (written every 15 min by bullet-check; see
-      // bingx_client.get_balance()). This is the capital being used to
-      // test the bullets strategy right now, NOT real money.
-      const vstTotal = cache.account ? Number(cache.account.vst_total) : null;
-
-      // Everything below is computed live from the "bullets" table itself
-      // (synced every 15 min by bullet-check), NOT from daily_snapshots --
-      // daily_snapshots only gets one row/day from the full report, so
-      // relying on it here made these numbers look stale for hours.
-      const activeBullets = bullets.filter(b => b.status === "open" || b.status === "tracking");
-      const closedBullets = bullets.filter(b => b.status.startsWith("closed"));
-      const roundOutcomes = {};
-      for (const b of closedBullets) roundOutcomes[b.round_number] = b.status;
-      const roundsCompleted = Object.keys(roundOutcomes).length;
-      const tpRounds = Object.values(roundOutcomes).filter(s => s === "closed_tp").length;
-      const totalRealizedPnl = closedBullets.reduce((sum, b) => sum + (Number(b.realized_pnl_usd) || 0), 0);
-      const currentRound = activeBullets.length
-        ? activeBullets[0].round_number
-        : bullets.reduce((max, b) => Math.max(max, b.round_number || 0), 0);
-
-      // Bullets accumulate: the +15% target is evaluated on the COMBINED
-      // position across every active bullet, not per bullet. Sum unrealized
-      // P&L and collateral across all of them for the combined gain %.
-      let combinedPnl = 0;
-      let combinedGainPct = 0;
-      if (activeBullets.length && price != null) {
-        let combinedCollateral = 0;
-        for (const b of activeBullets) {
-          const priceMovePct = (price - b.entry_price) / b.entry_price * 100;
-          const positionGainPct = priceMovePct * b.leverage;
-          combinedCollateral += b.collateral_usd;
-          combinedPnl += b.collateral_usd * positionGainPct / 100;
-        }
-        combinedGainPct = combinedCollateral ? (combinedPnl / combinedCollateral * 100) : 0;
-      }
-
-      // "Patrimonio total": your real DCA value plus the demo VST balance
-      // -- one number to eyeball where things stand overall, but the
-      // sub-label keeps them distinguishable since the VST leg is
-      // virtual/testing money, not real. Falls back to dcaValue alone if
-      // account_ticks hasn't been written yet.
-      const totalPortfolioValue = (dcaValue ?? 0) + (vstTotal ?? 0);
-      const avgEntryPrice = totalQtyBtc ? totalInvested / totalQtyBtc : null;
-
-      const cards = [
-        { label: "Patrimonio total estimado", value: fmtUsd(totalPortfolioValue),
-          sub: "DCA real (BTC) + balance demo BingX (VST)", cls: "total" },
-        { label: isLive ? "Precio BTC 🟢 en vivo" : "Precio BTC", value: fmtUsd(price),
-          sub: fmtPct(change24h), subCls: clsSign(change24h) },
-        { label: "Balance cuenta demo (VST)", value: vstTotal != null ? fmtUsd(vstTotal) : "—",
-          sub: "capital de prueba para la estrategia de balas" },
-        { label: "Valor DCA (BTC real)", value: fmtUsd(dcaValue),
-          sub: "puede estar en Nexo generando APR entre compras" },
-        { label: "Ganancia/pérdida DCA", value: fmtUsd(dcaUnrealizedGain),
-          sub: fmtPct(totalInvested ? (dcaUnrealizedGain / totalInvested * 100) : null),
-          subCls: clsSign(dcaUnrealizedGain) },
-        { label: "Total invertido (DCA)", value: fmtUsd(totalInvested),
-          sub: (dca.length) + " compra(s)" },
-        { label: "Precio medio de entrada", value: fmtUsd(avgEntryPrice),
-          sub: fmtNum(totalQtyBtc, 8) + " BTC" },
-        { label: "Fear & Greed", value: last.fear_greed_value ?? "—",
-          sub: last.fear_greed_classification || "" },
-        { label: `Balas usadas (ronda ${currentRound || "—"})`, value: activeBullets.length + " / " + MAX_BULLETS_PER_ROUND,
-          sub: (MAX_BULLETS_PER_ROUND - activeBullets.length) + " restantes esta ronda" },
-        { label: "P&L realizado (balas, todas las rondas)", value: fmtUsd(totalRealizedPnl),
-          sub: `${roundsCompleted} ronda(s) cerrada(s) · ${tpRounds} en TP`, subCls: clsSign(totalRealizedPnl) },
-      ];
-
-      if (activeBullets.length) {
-        cards.push({
-          label: `Ronda ${currentRound} en curso (${activeBullets.length} bala${activeBullets.length > 1 ? "s" : ""}) · P&L combinado`,
-          value: fmtUsd(combinedPnl),
-          sub: fmtPct(combinedGainPct) + " sobre el conjunto" + (isLive ? " · en vivo" : ""),
-          subCls: clsSign(combinedPnl),
-        });
-      }
-
-      $("status-cards").innerHTML = cards.map(c => `
-        <div class="card ${c.cls || ""}">
-          <div class="label">${c.label}</div>
-          <div class="value">${c.value}</div>
-          <div class="sub ${c.subCls || ""}">${c.sub || ""}</div>
-        </div>`).join("");
-
-      $("last-updated").textContent = isLive
-        ? "Precio en vivo actualizado: " + new Date().toLocaleTimeString("es-AR")
-        : (snaps.length
-          ? "Última actualización: " + fmtDateTime(last.created_at)
-          : "Sin datos todavía — el primer snapshot aparece cuando corre el informe.");
-    }
-
-    function renderCompare(snaps) {
-      const section = $("compare-section");
-      if (snaps.length < 2) { section.style.display = "none"; return; }
-      section.style.display = "block";
-      const today = snaps[snaps.length - 1];
-      const yday = snaps[snaps.length - 2];
-      const delta = (a, b) => (a == null || b == null) ? null : a - b;
-
-      const rows = [
-        { label: "Precio BTC", d: delta(today.price, yday.price), fmt: fmtUsd },
-        { label: "Fear & Greed", d: delta(today.fear_greed_value, yday.fear_greed_value), fmt: (n) => (n>=0?"+":"") + n },
-        { label: "Mayer Multiple", d: delta(today.mayer_multiple, yday.mayer_multiple), fmt: (n) => (n>=0?"+":"") + fmtNum(n, 3) },
-        { label: "Dominancia BTC", d: delta(today.btc_dominance_pct, yday.btc_dominance_pct), fmt: (n) => fmtPct(n) },
-      ];
-      $("compare-cards").innerHTML = rows.map(r => `
-        <div class="card">
-          <div class="label">${r.label} (Δ 1 día)</div>
-          <div class="value ${clsSign(r.d)}">${r.d == null ? "—" : r.fmt(r.d)}</div>
-        </div>`).join("");
-    }
-
-    function makeChart(canvasId, labels, data, color, opts = {}) {
-      if (charts[canvasId]) charts[canvasId].destroy();
-      charts[canvasId] = new Chart($(canvasId), {
-        type: "line",
-        data: {
-          labels,
-          datasets: [{
-            data, borderColor: color, backgroundColor: color + "22",
-            borderWidth: opts.thin ? 1.5 : 2, pointRadius: opts.thin ? 0 : 2,
-            tension: opts.thin ? 0.1 : 0.25, fill: opts.thin ? false : true,
-          }],
+  charts[canvasId] = new Chart(el, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [{
+        data, borderColor: color, backgroundColor: fill,
+        borderWidth: opts.thin ? 1.4 : 2,
+        pointRadius: 0, pointHoverRadius: 4,
+        pointHoverBackgroundColor: color, pointHoverBorderColor: "#07090D", pointHoverBorderWidth: 2,
+        tension: opts.thin ? 0.1 : 0.3, fill: true,
+        spanGaps: true,
+      }],
+    },
+    options: {
+      // Aspect-ratio sizing on purpose: with maintainAspectRatio:false a
+      // canvas needs a parent with an explicit height, and without one it
+      // silently collapses to 0px -- which made the whole charts row
+      // disappear. Letting Chart.js derive height from width avoids that.
+      responsive: true, maintainAspectRatio: true, aspectRatio: opts.ratio || 2.1,
+      animation: opts.thin ? false : { duration: 400 },
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: "#161B23", borderColor: "rgba(255,255,255,.14)", borderWidth: 1,
+          titleColor: "#97A1B0", bodyColor: "#E8ECF2", padding: 10,
+          displayColors: false, cornerRadius: 8,
+          callbacks: { label: (c) => (opts.fmt || ((v) => fmtUsd(v)))(c.parsed.y) },
         },
-        options: {
-          responsive: true,
-          animation: opts.thin ? false : true,
-          plugins: { legend: { display: false } },
-          scales: {
-            x: { ticks: { color: "#8b94a3", maxTicksLimit: 6 }, grid: { color: "#2a313c" } },
-            y: { type: opts.yType || "linear", ticks: { color: "#8b94a3" }, grid: { color: "#2a313c" } },
-          },
-        },
-      });
-    }
+      },
+      scales: {
+        x: { ticks: { maxTicksLimit: 6, maxRotation: 0, autoSkipPadding: 18 },
+             grid: { display: false }, border: { color: "rgba(255,255,255,.07)" } },
+        y: { type: opts.yType || "linear",
+             ticks: { maxTicksLimit: 5, callback: (v) => (opts.tick || ((x) => fmtUsd0(x)))(v) },
+             grid: { color: "rgba(255,255,255,.05)" }, border: { display: false } },
+      },
+    },
+  });
+}
 
-    function renderCharts(snaps, ticks) {
-      // Very-recent price: prefer price_ticks (written every 15 min by
-      // bullet-check) for real intraday resolution. Falls back to the
-      // once-a-day snapshots if ticks haven't started accumulating yet.
-      const priceSeries = ticks.length ? ticks : snaps;
-      const priceLabels = priceSeries.map(t => fmtDateTime(t.created_at));
-      makeChart("chart-price", priceLabels, priceSeries.map(t => t.price), "#f7931a");
+function renderRecentCharts() {
+  // Very-recent price: prefer price_ticks (written every 15 min by
+  // bullet-check) for real intraday resolution. Falls back to the
+  // once-a-day snapshots if ticks haven't started accumulating yet.
+  const series = cache.ticks.length ? cache.ticks : cache.snaps;
+  $("chip-recent").textContent = cache.ticks.length ? "cada 15 min" : "diario";
+  makeChart("chart-price", series.map(t => fmtDateTime(t.created_at)),
+    series.map(t => t.price), "#F7931A");
 
-      // Dominance: only as long as this agent has been running (once/day
-      // in daily_snapshots) -- see the caveat note in the HTML. No free
-      // historical source found for this one.
-      const labels = snaps.map(s => fmtDate(s.created_at));
-      makeChart("chart-dominance", labels, snaps.map(s => s.btc_dominance_pct), "#e3b341");
-    }
+  const snaps = cache.snaps;
+  const domLast = [...snaps].reverse().find(s => s.btc_dominance_pct != null);
+  $("chip-dom").textContent = domLast ? fmtNum(domLast.btc_dominance_pct, 1) + "%" : "—";
+  makeChart("chart-dominance", snaps.map(s => fmtDateShort(s.created_at)),
+    snaps.map(s => s.btc_dominance_pct), "#4C8DFF",
+    { fmt: (v) => fmtNum(v, 2) + "%", tick: (v) => fmtNum(v, 0) + "%" });
+}
 
-    // ---- Market cycle: full-history charts, independent of how long
-    // this agent has been running. Fetched once per dashboard load (not
-    // on the 30s live-price tick) from two free, no-key public APIs.
-    function downsample(arr, everyN) {
-      return arr.filter((_, i) => i % everyN === 0);
-    }
+// ---- Market cycle: full-history data, independent of how long this
+// agent has been running. Fetched once per dashboard load from two free,
+// no-key public APIs.
+const downsample = (arr, n) => arr.filter((_, i) => i % n === 0);
 
-    function rollingSma(values, windowSize) {
-      const result = new Array(values.length).fill(null);
-      let sum = 0;
-      for (let i = 0; i < values.length; i++) {
-        sum += values[i];
-        if (i >= windowSize) sum -= values[i - windowSize];
-        if (i >= windowSize - 1) result[i] = sum / windowSize;
-      }
-      return result;
-    }
+function rollingSma(values, windowSize) {
+  const result = new Array(values.length).fill(null);
+  let sum = 0;
+  for (let i = 0; i < values.length; i++) {
+    sum += values[i];
+    if (i >= windowSize) sum -= values[i - windowSize];
+    if (i >= windowSize - 1) result[i] = sum / windowSize;
+  }
+  return result;
+}
 
-    // CoinGecko's free public API caps historical data at the last 365
-    // days (confirmed empirically 2026-07-24 -- it used to allow
-    // days=max, no longer does without a paid plan) -- not enough to
-    // compute a 200-WEEK (1400-day) moving average. Binance's public
-    // klines endpoint has no such cap, needs no API key, and covers
-    // BTCUSDT back to 2017 -- paginated 1000 candles (Binance's max) per
-    // request.
-    async function fetchBinanceDailyCloses(symbol = "BTCUSDT") {
-      const all = [];
-      let startTime = new Date("2017-08-01T00:00:00Z").getTime();
-      const limit = 1000;
-      for (let i = 0; i < 8; i++) {  // safety cap, ~8000 days
-        const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1d&startTime=${startTime}&limit=${limit}`;
-        const res = await fetch(url);
-        if (!res.ok) break;
-        const rows = await res.json();
-        if (!rows.length) break;
-        for (const r of rows) all.push({ ts: r[0], price: Number(r[4]) });
-        if (rows.length < limit) break;
-        startTime = rows[rows.length - 1][0] + 24 * 60 * 60 * 1000;
-      }
-      return all;
-    }
+// CoinGecko's free public API caps historical data at the last 365 days
+// (confirmed empirically 2026-07-24 -- it used to allow days=max, no
+// longer does without a paid plan) -- not enough to compute a 200-WEEK
+// (1400-day) moving average. Binance's public klines endpoint has no such
+// cap, needs no API key, and covers BTCUSDT back to 2017 -- paginated
+// 1000 candles (Binance's max) per request.
+async function fetchBinanceDailyCloses(symbol = "BTCUSDT") {
+  const all = [];
+  let startTime = new Date("2017-08-01T00:00:00Z").getTime();
+  const limit = 1000;
+  for (let i = 0; i < 8; i++) {   // safety cap, ~8000 days
+    const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1d&startTime=${startTime}&limit=${limit}`;
+    const res = await fetch(url);
+    if (!res.ok) break;
+    const rows = await res.json();
+    if (!rows.length) break;
+    for (const r of rows) all.push({ ts: r[0], price: Number(r[4]) });
+    if (rows.length < limit) break;
+    startTime = rows[rows.length - 1][0] + 24 * 60 * 60 * 1000;
+  }
+  return all;
+}
 
-    async function loadMarketCycleCharts() {
-      try {
-        const [btcPrices, fngRes] = await Promise.all([
-          fetchBinanceDailyCloses(),
-          fetch("https://api.alternative.me/fng/?limit=0&format=json"),
-        ]);
-        const fngJson = await fngRes.json();
+async function loadMarketCycleData() {
+  try {
+    const [btcPrices, fngRes] = await Promise.all([
+      fetchBinanceDailyCloses(),
+      fetch("https://api.alternative.me/fng/?limit=0&format=json"),
+    ]);
+    if (!btcPrices.length) return;
+    const fngJson = await fngRes.json();
+    const fng = (fngJson.data || [])
+      .map(d => ({ ts: Number(d.timestamp) * 1000, value: Number(d.value) }))
+      .reverse();   // alternative.me returns newest-first
 
-        const fngHistory = (fngJson.data || [])
-          .map(d => ({ ts: Number(d.timestamp) * 1000, value: Number(d.value) }))
-          .reverse(); // alternative.me returns newest-first
+    const closes  = btcPrices.map(p => p.price);
+    const sma200  = rollingSma(closes, 200);    // Mayer Multiple's denominator
+    const sma1400 = rollingSma(closes, 1400);   // ~200 weeks of daily closes
+    const mayer   = closes.map((p, i) => sma200[i] ? p / sma200[i] : null);
+    const dist200w = closes.map((p, i) => sma1400[i] ? (p - sma1400[i]) / sma1400[i] * 100 : null);
 
-        if (!btcPrices.length) return;
+    const lastDefined = (a) => { for (let i = a.length - 1; i >= 0; i--) if (a[i] != null) return a[i]; return null; };
+    cache.cycle = {
+      btcPrices, closes, mayer, dist200w, fng,
+      mayerNow: lastDefined(mayer), dist200wNow: lastDefined(dist200w),
+    };
 
-        const closes = btcPrices.map(p => p.price);
-        const sma200 = rollingSma(closes, 200);          // Mayer Multiple's denominator
-        const sma1400 = rollingSma(closes, 1400);         // ~200 weeks of daily closes
+    $("chip-mayer").textContent = fmtNum(cache.cycle.mayerNow, 2);
+    $("chip-mayer").className = "chip " + (cache.cycle.mayerNow > 2.4 ? "hot" : cache.cycle.mayerNow < 1 ? "cold" : "");
+    $("chip-200w").textContent = fmtPct(cache.cycle.dist200wNow);
+    $("chip-200w").className = "chip " + clsSign(cache.cycle.dist200wNow).replace("pos", "up").replace("neg", "down");
 
-        const mayer = closes.map((price, i) => sma200[i] ? price / sma200[i] : null);
-        const dist200w = closes.map((price, i) =>
-          sma1400[i] ? (price - sma1400[i]) / sma1400[i] * 100 : null);
+    renderHero(deriveMetrics());   // hero Mayer gauge now has a fresher value
+    if ($("panel-ciclo").classList.contains("active")) buildCycleCharts();
+  } catch (e) {
+    // Best-effort: these are independent public APIs with their own rate
+    // limits -- if either is down, the rest of the dashboard still works.
+    console.warn("Market cycle data fetch failed:", e);
+  }
+}
 
-        // Thousands of daily points is more than the chart needs to look
-        // right and slower to render -- plot roughly weekly.
-        const step = 7;
-        const dsPoints = downsample(btcPrices, step);
-        const dsLabels = dsPoints.map(p => fmtDate(new Date(p.ts).toISOString()));
+function buildCycleCharts() {
+  const c = cache.cycle;
+  if (!c) return;
+  cycleChartsBuilt = true;
 
-        makeChart("chart-price-history", dsLabels, downsample(closes, step), "#f7931a",
-          { thin: true, yType: "logarithmic" });
-        makeChart("chart-mayer-history", dsLabels, downsample(mayer, step), "#58a6ff", { thin: true });
-        makeChart("chart-sma200w-history", dsLabels, downsample(dist200w, step), "#bc8cff", { thin: true });
+  // Thousands of daily points is more than the chart needs to look right
+  // and slower to render -- plot roughly weekly.
+  const step = 7;
+  const labels = downsample(c.btcPrices, step).map(p => fmtDate(new Date(p.ts).toISOString()));
 
-        const fngStep = 3;
-        const fngLabels = downsample(fngHistory, fngStep).map(d => fmtDate(new Date(d.ts).toISOString()));
-        makeChart("chart-fg-history", fngLabels,
-          downsample(fngHistory, fngStep).map(d => d.value), "#3fb950", { thin: true });
-      } catch (e) {
-        // Best-effort: these are independent public APIs with their own
-        // rate limits -- if either is down, the rest of the dashboard
-        // still works fine.
-        console.warn("Market cycle data fetch failed:", e);
-      }
-    }
+  makeChart("chart-price-history", labels, downsample(c.closes, step), "#F7931A",
+    { thin: true, yType: "logarithmic", tick: (v) => "$" + (v >= 1000 ? (v / 1000) + "k" : v) });
+  makeChart("chart-mayer-history", labels, downsample(c.mayer, step), "#4C8DFF",
+    { thin: true, fmt: (v) => fmtNum(v, 2), tick: (v) => fmtNum(v, 1) });
+  makeChart("chart-sma200w-history", labels, downsample(c.dist200w, step), "#A78BFA",
+    { thin: true, fmt: (v) => fmtPct(v), tick: (v) => Math.round(v) + "%" });
 
-    function renderDcaTable(dca) {
-      if (!dca.length) { $("dca-table").innerHTML = `<div class="empty">Sin compras DCA registradas.</div>`; return; }
-      $("dca-table").innerHTML = `
-        <table>
-          <thead><tr><th>Fecha</th><th>Monto</th><th>Precio</th><th>Activo</th></tr></thead>
-          <tbody>${dca.map(p => `
-            <tr>
-              <td>${fmtDate(p.purchased_at)}</td>
-              <td>${fmtUsd(p.amount_usd)}</td>
-              <td>${fmtUsd(p.price)}</td>
-              <td>${p.asset}</td>
-            </tr>`).join("")}</tbody>
-        </table>`;
-    }
+  const fngStep = 3, fngDs = downsample(c.fng, fngStep);
+  makeChart("chart-fg-history", fngDs.map(d => fmtDate(new Date(d.ts).toISOString())),
+    fngDs.map(d => d.value), "#2EBD85",
+    { thin: true, fmt: (v) => Math.round(v), tick: (v) => Math.round(v) });
+}
 
-    function renderBulletsTable(bullets) {
-      if (!bullets.length) { $("bullets-table").innerHTML = `<div class="empty">Sin balas todavía. La fase de balas arranca cuando abras la primera manualmente.</div>`; return; }
-      $("bullets-table").innerHTML = `
-        <table>
-          <thead><tr>
-            <th>Ronda</th><th>#</th><th>Estado</th><th>Colateral</th><th>Entrada</th>
-            <th>Objetivo</th><th>Liq. aprox</th><th>Cierre</th><th>P&L</th><th>Origen</th>
-          </tr></thead>
-          <tbody>${bullets.map(b => `
-            <tr>
-              <td>${b.round_number ?? "—"}</td>
-              <td>${b.bullet_number}</td>
-              <td><span class="badge ${b.status}">${b.status}</span></td>
-              <td>${fmtUsd(b.collateral_usd)}</td>
-              <td>${fmtUsd(b.entry_price)}</td>
-              <td>${fmtUsd(b.target_price)}</td>
-              <td>${fmtUsd(b.approx_liquidation_price)}</td>
-              <td>${b.closing_price ? fmtUsd(b.closing_price) : "—"}</td>
-              <td class="${clsSign(b.realized_pnl_usd)}">${b.realized_pnl_usd == null ? "—" : fmtUsd(b.realized_pnl_usd)}</td>
-              <td>${b.bingx_order_id ? "BingX" : "manual"}</td>
-            </tr>`).join("")}</tbody>
-        </table>`;
-    }
+// ============ REPORTS ============
+function renderReports(snaps) {
+  const withText = snaps.filter(s => s.report_text);
+  if (!withText.length) {
+    $("report-latest").innerHTML = `<div class="block"><div class="empty"><span class="big">✎</span>Sin informes generados todavía.</div></div>`;
+    $("archive-block").style.display = "none";
+    return;
+  }
+  const latest = withText[withText.length - 1];
+  $("report-latest").innerHTML = `
+    <div class="report">
+      <div class="mark sm">₿</div>
+      <div class="report-body">
+        <div class="report-meta">
+          <b>Informe del agente</b>
+          <time>${fmtDateTime(latest.created_at)}</time>
+        </div>
+        <div class="report-text">${escapeHtml(latest.report_text)}</div>
+      </div>
+    </div>`;
 
-    function renderReport(snaps) {
-      const last = snaps[snaps.length - 1];
-      $("report-text").textContent = (last && last.report_text)
-        ? last.report_text
-        : "Sin informe generado todavía.";
-    }
+  // Previous reports: the data was already loaded, and being able to look
+  // back at what the agent said on a given day is the whole point of
+  // keeping report_text per snapshot.
+  const older = withText.slice(0, -1).reverse().slice(0, 20);
+  if (!older.length) { $("archive-block").style.display = "none"; return; }
+  $("archive-block").style.display = "block";
+  $("report-archive").innerHTML = older.map((s, i) => `
+    <button class="archive-item" data-i="${i}">
+      <time>${fmtDateShort(s.created_at)}</time>
+      <span class="snippet">${escapeHtml(s.report_text.replace(/\s+/g, " ").slice(0, 150))}</span>
+    </button>`).join("");
 
-    init();
-  </script>
+  $("report-archive").querySelectorAll(".archive-item").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const s = older[Number(btn.dataset.i)];
+      $("report-latest").innerHTML = `
+        <div class="report">
+          <div class="mark sm">₿</div>
+          <div class="report-body">
+            <div class="report-meta">
+              <b>Informe del agente</b>
+              <time>${fmtDateTime(s.created_at)}</time>
+              <span class="chip">archivo</span>
+            </div>
+            <div class="report-text">${escapeHtml(s.report_text)}</div>
+          </div>
+        </div>`;
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+  });
+}
+
+// report_text comes from an LLM, so it is never injected as raw HTML.
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+init();
+</script>
 </body>
 </html>
