@@ -996,11 +996,47 @@ function renderRoundProgress(m) {
     </div>`;
 }
 
+const DAY_MS = 86400000;
+
+// Pick the snapshot closest to `targetMs`, or null if the nearest one is
+// further away than the tolerance. Same approach as memory.py's
+// _closest_snapshot, and for the same reason.
+function _nearestSnapshot(candidates, targetMs, toleranceMs = 2 * DAY_MS) {
+  let best = null, bestDiff = Infinity;
+  for (const s of candidates) {
+    if (!s.created_at) continue;
+    const diff = Math.abs(new Date(s.created_at).getTime() - targetMs);
+    if (diff < bestDiff) { bestDiff = diff; best = s; }
+  }
+  return bestDiff <= toleranceMs ? best : null;
+}
+
 function renderCompare(snaps) {
   const block = $("compare-block");
   if (snaps.length < 2) { block.style.display = "none"; return; }
+
+  const today = snaps[snaps.length - 1];
+  // Chosen by DATE, not by index. snaps[length-2] is only "yesterday" if
+  // there is exactly one snapshot per day -- while two schedulers were
+  // both running the report (fixed 2026-07-31) this compared two runs of
+  // the SAME morning and labelled the result "vs. ayer". A manual run
+  // still reproduces that, so the lookup stays date-based.
+  const todayMs = new Date(today.created_at).getTime();
+  // Same-day snapshots are excluded BEFORE picking the nearest one.
+  // Without this, a day holding only two runs and no earlier history
+  // still resolves to "yesterday" a couple of hours ago -- the original
+  // bug, just narrowed rather than fixed.
+  const cutoff = todayMs - 12 * 3600 * 1000;
+  const older = snaps.slice(0, -1).filter(
+    s => s.created_at && new Date(s.created_at).getTime() <= cutoff);
+  const ref = _nearestSnapshot(older, todayMs - DAY_MS);
+  if (!ref) { block.style.display = "none"; return; }
   block.style.display = "block";
-  const today = snaps[snaps.length - 1], yday = snaps[snaps.length - 2];
+
+  const gapDays = Math.max(1, Math.round((todayMs - new Date(ref.created_at).getTime()) / DAY_MS));
+  const gapLabel = gapDays === 1 ? "vs. ayer" : `vs. hace ${gapDays} días`;
+
+  const yday = ref;
   const delta = (a, b) => (a == null || b == null) ? null : a - b;
 
   const rows = [
@@ -1010,7 +1046,7 @@ function renderCompare(snaps) {
     { l: "Dominancia BTC", d: delta(today.btc_dominance_pct, yday.btc_dominance_pct), f: (n) => fmtPct(n) },
   ];
   $("compare-stats").innerHTML = rows.map(r => statHtml({
-    l: r.l, v: r.d == null ? "—" : r.f(r.d), vCls: clsSign(r.d), s: "vs. ayer",
+    l: r.l, v: r.d == null ? "—" : r.f(r.d), vCls: clsSign(r.d), s: gapLabel,
   })).join("");
 }
 

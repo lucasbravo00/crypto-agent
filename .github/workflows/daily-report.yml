@@ -3,13 +3,25 @@ name: Daily crypto report
 # Runs the agent's daily report without depending on any local machine being
 # on. Uses a local Ollama model (free) instead of the Claude API.
 #
+# This is the ONLY scheduled daily report. There used to be a launchd job
+# on the Mac (com.cryptoagent.dailyreport) firing at the same wall-clock
+# time, which is why two reports arrived every day until 2026-07-31; that
+# job is now disabled. launchd still owns bullet-check (every 15 min),
+# which has no equivalent here.
+#
 # State (DCA purchases, bullets) lives in Supabase, shared with the local
-# launchd-driven run on your Mac -- both see the same real data.
+# launchd-driven bullet-check on your Mac -- both see the same real data.
 
 on:
   schedule:
-    # 11:00 UTC = 08:00 Argentina time (UTC-3)
-    - cron: "0 11 * * *"
+    # Scheduled for 09:00 UTC to LAND near 08:00 Argentina (UTC-3), not to
+    # start then. GitHub queues scheduled workflows when the platform is
+    # busy and they routinely run late: measured starts over five days
+    # against an 11:00 UTC cron were 12:25, 12:50, 12:51, 12:56 and 13:34
+    # UTC -- between 1h25m and 2h34m late, median ~1h50m. Adding the job's
+    # own ~10 min runtime, 09:00 UTC typically delivers around 07:45-08:45
+    # Argentina. Do not "fix" this to 11:00 expecting an 08:00 delivery.
+    - cron: "0 9 * * *"
   workflow_dispatch: {} # lets you trigger a manual test run from the Actions tab
 
 jobs:

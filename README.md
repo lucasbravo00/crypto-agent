@@ -314,28 +314,54 @@ python main.py report            # run the full agent and deliver the report
 python -m pytest tests/ -v       # unit tests for the pure logic
 ```
 
-## Automation (macOS launchd)
+## Automation
 
-Two LaunchAgents keep this running without manual invocation. They live
-in `~/Library/LaunchAgents/` (system config, not part of this repo) and
-write their run logs to `logs/launchd_*.out.log` / `.err.log`.
+Two schedulers, with **no overlap between them** — one job each:
 
-| Job | Schedule | Runs |
-|---|---|---|
-| `com.cryptoagent.dailyreport` | daily at 08:00 | `python main.py report` (full LLM report, delivered via `NOTIFY_CHANNEL`) |
-| `com.cryptoagent.bulletcheck` | every 15 minutes | `python main.py bullet-check` (no LLM; price tick, auto-trade, bullet sync + reconciliation, DCA sync, account tick — only notifies on alerts/mismatches) |
+| Job | Where | Schedule | Runs |
+|---|---|---|---|
+| Daily report | **GitHub Actions** (`.github/workflows/daily-report.yml`) | `0 9 * * *` UTC | `python main.py report` (full LLM report, delivered via `NOTIFY_CHANNEL`) |
+| `com.cryptoagent.bulletcheck` | **launchd** (your Mac) | every 15 minutes | `python main.py bullet-check` (no LLM; price tick, auto-trade, bullet sync + reconciliation, DCA sync, account tick — only notifies on alerts/mismatches) |
+
+The daily report lives in GitHub Actions so it still arrives when the Mac
+is off. bullet-check stays on launchd because it needs a 15-minute cadence
+that a hosted cron isn't a good fit for.
+
+> **Why two reports used to arrive every day (fixed 2026-07-31).** A
+> launchd job `com.cryptoagent.dailyreport` fired at 08:00 Argentina and
+> the Actions cron was set to `0 11 * * *` UTC — *the same instant* — and
+> both had `NOTIFY_CHANNEL=all`. The workflow had been added to replace
+> the launchd job, but the launchd job was never disabled, so each day
+> produced two emails, two Telegram messages and two `daily_snapshots`
+> rows. The launchd plist is now renamed to `.plist.disabled`.
+>
+> The Actions cron is deliberately set to **09:00 UTC to land near 08:00
+> Argentina**, not to start then: GitHub queues scheduled workflows under
+> load and they routinely run 1.5–2.5h late (see the comment in the
+> workflow for the measured numbers). Don't "correct" it back to 11:00.
+
+LaunchAgents live in `~/Library/LaunchAgents/` (system config, not part of
+this repo) and write run logs to `logs/launchd_*.out.log` / `.err.log`.
 
 ```bash
-launchctl list | grep cryptoagent                                 # confirm both are loaded
-launchctl kickstart -k gui/$(id -u)/com.cryptoagent.dailyreport   # force a run right now
-launchctl bootout gui/$(id -u)/com.cryptoagent.bulletcheck        # disable a job
+launchctl list | grep cryptoagent                                  # should show ONLY bulletcheck
+launchctl kickstart -k gui/$(id -u)/com.cryptoagent.bulletcheck    # force a run right now
+launchctl bootout gui/$(id -u)/com.cryptoagent.bulletcheck         # disable it
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.cryptoagent.bulletcheck.plist  # re-enable it
+
+gh run list --workflow=daily-report.yml --limit 5                  # recent report runs
+gh workflow run daily-report.yml                                   # trigger one now
+python main.py report                                              # or just run it locally
 ```
 
-**Caveat**: with `LLM_BACKEND=ollama`, the Ollama app must be running in
-the background for `dailyreport` to work — if the Mac is off (asleep is
-fine; launchd catches up missed runs on wake) or Ollama isn't running at
-08:00, check `logs/launchd_dailyreport.err.log` for the failure.
+To bring the old launchd daily report back (and get two reports a day
+again), rename `~/Library/LaunchAgents/com.cryptoagent.dailyreport.plist.disabled`
+back to `.plist` and `launchctl bootstrap` it.
+
+**Caveat**: `bullet-check` needs the Mac awake (asleep is fine; launchd
+catches up missed runs on wake). The daily report no longer depends on
+that — but with `LLM_BACKEND=ollama` a *local* `python main.py report`
+still needs the Ollama app running.
 
 ## Report chart
 
