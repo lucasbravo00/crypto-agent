@@ -21,3 +21,20 @@ alter table account_ticks add column if not exists liquidation_price numeric;
 
 comment on column account_ticks.liquidation_price is
     'BingX-reported cross-margin liquidation price for the open BTC-USDT position; null when flat.';
+
+-- Reload PostgREST's schema cache. WITHOUT THIS the ALTER TABLE above
+-- appears to have worked -- `select *` returns the new column, because
+-- that query goes straight to Postgres -- while every INSERT that
+-- mentions it fails with:
+--
+--   PGRST204: Could not find the 'liquidation_price' column of
+--             'account_ticks' in the schema cache
+--
+-- because PostgREST validates INSERT payload keys against its own cached
+-- schema. The failure is silent from the app's side: main.py catches it,
+-- prints a warning to the launchd log and moves on, so account_ticks just
+-- quietly stops being written. This bit us on 2026-07-31, and the same
+-- error is already in the log for `vst_total` and for the table itself
+-- from earlier migrations -- so it is a recurring trap, not a one-off.
+-- Every future migration that adds a column should end with this line.
+notify pgrst, 'reload schema';
