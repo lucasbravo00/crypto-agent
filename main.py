@@ -357,7 +357,16 @@ def cmd_bullet_check():
                 # to Nexo for yield between DCA buys), so it isn't a
                 # meaningful "money in account" figure.
                 balance = bingx_client.get_balance()
-                state.record_account_tick(balance["total"])
+                # BingX's own cross-margin liquidation price, recorded on
+                # the same 15-min cadence so the dashboard can anchor the
+                # round-progress bar to the real liquidation. Best-effort:
+                # a failure here must not cost the balance tick.
+                try:
+                    liq_price = bingx_client.get_liquidation_price()
+                except Exception as exc:
+                    print(f"⚠️ Could not read liquidation price: {exc}")
+                    liq_price = None
+                state.record_account_tick(balance["total"], liquidation_price=liq_price)
             except Exception as exc:
                 print(f"⚠️ Could not record account tick: {exc}")
 

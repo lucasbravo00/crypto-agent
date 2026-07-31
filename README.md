@@ -150,12 +150,23 @@ supabase/migration_*.sql   -> incremental migrations, run in order if your proje
   being liquidated bullet-by-bullet. `bingx_client.open_long_position()`
   forces cross mode before a round's first bullet (the only moment
   BingX allows changing it — it refuses mid-round, while flat with
-  contracts open). Known follow-up, not yet done:
-  `strategy_tools.simulate_bullet_math()`'s `approx_liquidation_price`
-  still assumes isolated math per bullet; under cross margin the real
-  liquidation point is a function of the whole round's combined
-  position vs. total account equity, not any single bullet in
-  isolation — that display is now illustrative, not literal.
+  contracts open).
+- **The real liquidation price is read from BingX, never computed
+  locally.** Under cross margin it is a function of the whole account
+  equity, not of any single bullet's collateral, so it moves when the
+  balance moves and not only when price does. Measured 2026-07-31 with 3
+  open bullets: BingX reported **$414.70** while the position sat at
+  $62.9k, because ~109k VST of free balance was backing it — that gap
+  *is* the point of the 30-bullet budget. `bullet-check` stores the
+  exchange's own figure in `account_ticks.liquidation_price` every 15
+  minutes, and the dashboard's round-progress bar anchors its negative
+  end to it. Note ccxt's unified `liquidationPrice` field returns None
+  for BingX cross-margin positions; the value only exists in the raw
+  `info` payload (see `bingx_client.get_liquidation_price`).
+  Still open: `strategy_tools.simulate_bullet_math()`'s
+  `approx_liquidation_price` — the per-bullet column in the bullets
+  table — remains isolated-margin math and is illustrative, not literal.
+  Nothing depends on it for a decision.
 - **Sync from trade history, not positions**: BingX MERGES same-symbol,
   same-side positions into one row with an averaged entry price (opening
   a position and later adding to it keeps the same `positionId`).
@@ -421,7 +432,19 @@ suggests trades. It shows:
   from wherever the BTC physically sits, since it rotates to Nexo for
   yield between buys), the demo VST balance, and the current round's
   bullet usage/P&L.
-- A yesterday-vs-today comparison.
+- A yesterday-vs-today comparison. The reference snapshot is chosen by
+  **date** (nearest to 24h before the latest, same-day rows excluded),
+  not by taking the previous row: while two schedulers were both running
+  the report, "yesterday" was silently two hours ago.
+- **A round-progress bar drawn in price space**, over three anchors:
+  BingX's real cross-margin liquidation price on the left, break-even in
+  the middle, the +15% close on the right. The two halves use different
+  scales on purpose — under cross margin the liquidation is enormously
+  far away (measured: target $66.4k vs liquidation $414.70), so one
+  linear scale would squeeze the target into ~3% of the bar and park a
+  −12% reading right beside the goal flag. Splitting at break-even keeps
+  both readings honest. Falls back to the old symmetric ±15% view when no
+  liquidation price is available.
 - **Market-cycle charts, independent of how long this agent has been
   running**: full BTC price history since 2017 (log scale, via Binance's
   public klines endpoint — CoinGecko's free tier caps history at 365
@@ -742,11 +765,16 @@ something that quietly grows out of the backtester.
    real, automatic `bullet-check` cycle has only been unit-tested and
    manually invoked once (an emergency cleanup) — worth watching for
    naturally or testing deliberately.
-3. **Cross-margin liquidation display**: `strategy_tools.simulate_bullet_math()`
-   still reports a per-bullet `approx_liquidation_price` using isolated,
-   USDT-margined math. Under cross margin with BTC collateral the real
-   liquidation point is a function of the whole round vs. account equity
-   (the backtest already models this correctly; the live display does not).
+3. **Cross-margin liquidation display** (partly done 2026-07-31): the
+   dashboard's round-progress bar now uses BingX's OWN liquidation price,
+   stored per tick in `account_ticks.liquidation_price`, so the number
+   that matters is real. Still outstanding:
+   `strategy_tools.simulate_bullet_math()` reports a per-bullet
+   `approx_liquidation_price` using isolated, USDT-margined math, and the
+   bullets table still shows that column. Under cross margin with BTC
+   collateral the real liquidation point is a function of the whole round
+   vs. account equity (the backtest models this correctly; that one
+   per-bullet column does not). Nothing decides anything from it.
 4. **Surface backtest context in the daily report**: the human makes the
    de-risking calls, so the report is where that judgment gets informed —
    e.g. showing how deep the current round is into its 30-bullet budget

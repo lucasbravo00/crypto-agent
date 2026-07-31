@@ -257,13 +257,18 @@
     .segs i.on { background:var(--or); box-shadow:0 0 10px -2px rgba(247,147,26,.7); }
 
     /* Progress toward the round's combined +15% target. */
-    /* Right padding keeps the "+15%" goal flag from clipping at the edge. */
-    .track { position:relative; height:30px; margin:16px 34px 8px 0; }
+    /* Side padding keeps the two end flags from clipping at the edges. */
+    .track { position:relative; height:30px; margin:16px 40px 8px; }
     .track-bg { position:absolute; inset:11px 0 auto; height:8px; border-radius:999px; background:var(--surface-3); }
     .track-fill { position:absolute; top:11px; height:8px; border-radius:999px; transition:.3s; }
     .track-zero { position:absolute; top:5px; width:1px; height:20px; background:var(--line-2); }
-    .track-goal { position:absolute; top:2px; transform:translateX(-50%); font-size:10px; color:var(--tx-3); font-family:var(--mono); }
-    .track-goal::after { content:""; position:absolute; left:50%; top:13px; width:2px; height:14px; background:var(--gr); border-radius:2px; }
+    .track-goal, .track-end { position:absolute; top:2px; transform:translateX(-50%);
+                              font-size:10px; color:var(--tx-3); font-family:var(--mono);
+                              white-space:nowrap; }
+    .track-goal::after, .track-end::after { content:""; position:absolute; left:50%; top:13px;
+                              width:2px; height:14px; border-radius:2px; }
+    .track-goal::after { background:var(--gr); }
+    .track-end::after  { background:var(--rd); }
     .track-mark { position:absolute; top:8px; width:3px; height:14px; border-radius:2px; background:var(--tx); transform:translateX(-50%); }
 
     /* ============ CHARTS ============ */
@@ -777,7 +782,8 @@ function deriveMetrics() {
   // Bullets accumulate: the +15% target is evaluated on the COMBINED
   // position across every active bullet, not per bullet. Sum unrealized
   // P&L and collateral across all of them for the combined gain %.
-  let combinedPnl = 0, combinedGainPct = 0, combinedCollateral = 0, targetPrice = null;
+  let combinedPnl = 0, combinedGainPct = 0, combinedCollateral = 0,
+      targetPrice = null, breakEvenPrice = null;
   if (active.length && price != null) {
     let sumCoverEntry = 0, leverage = active[0].leverage || 1;
     for (const b of active) {
@@ -792,8 +798,19 @@ function deriveMetrics() {
     // number can't drift apart).
     if (sumCoverEntry > 0) {
       targetPrice = (combinedCollateral * (TARGET_GAIN_PCT / 100) / leverage + combinedCollateral) / sumCoverEntry;
+      // Price at which the combined gain is exactly 0 -- the collateral-
+      // weighted entry. Same formula with the target set to 0, so the
+      // three anchors of the progress bar all come from one place.
+      breakEvenPrice = combinedCollateral / sumCoverEntry;
     }
   }
+
+  // BingX's OWN cross-margin liquidation price, recorded every 15 min by
+  // bullet-check (see bingx_client.get_liquidation_price for why it can't
+  // be derived here). Null when flat, or when the account_ticks migration
+  // hasn't been applied yet -- the bar falls back gracefully.
+  const liqPrice = cache.account && cache.account.liquidation_price != null
+    ? Number(cache.account.liquidation_price) : null;
 
   // "Patrimonio total": real DCA value plus the demo VST balance -- one
   // number to eyeball where things stand, but the split bar underneath
@@ -807,6 +824,7 @@ function deriveMetrics() {
     vstTotal, totalPortfolio,
     active, closed, roundsCompleted, tpRounds, realizedPnl, currentRound,
     combinedPnl, combinedGainPct, combinedCollateral, targetPrice,
+    breakEvenPrice, liqPrice,
   };
 }
 
@@ -967,14 +985,45 @@ function renderRoundProgress(m) {
   const segs = Array.from({ length: MAX_BULLETS_PER_ROUND },
     (_, i) => `<i class="${i < used ? "on" : ""}"></i>`).join("");
 
-  // Track spans -15%..+15%; zero sits in the middle, the goal flag at the
-  // right end. Clamped so an extreme reading can't overflow the box.
-  const SPAN = 15;
-  const g = Math.max(-SPAN, Math.min(SPAN, m.combinedGainPct));
-  const toPct = (x) => ((x + SPAN) / (SPAN * 2) * 100);
-  const zeroPos = toPct(0), curPos = toPct(g);
+  // The bar is drawn in PRICE space, over three anchors: liquidation on
+  // the left, break-even in the middle, the +15% target on the right.
+  //
+  // The two halves use DIFFERENT scales on purpose. Under cross margin
+  // the distance to liquidation is enormous (measured 2026-07-31: target
+  // $66.4k vs BingX liquidation $414.70) because the whole free balance
+  // backs the position -- exactly what the 30-bullet budget is for. A
+  // single linear scale across that range would squeeze the +15% target
+  // into ~3% of the bar and park a -12% reading at 95% of its width,
+  // right beside the goal flag. Splitting at break-even keeps both
+  // readings honest: "how far into the danger side" on the left, "how
+  // close to closing the round" on the right.
+  //
+  // Without a liquidation price (flat, or the account_ticks migration not
+  // applied yet) it falls back to the previous symmetric ±15% view.
+  const hasLiq = m.liqPrice != null && m.breakEvenPrice != null
+    && m.liqPrice > 0 && m.liqPrice < m.breakEvenPrice && m.price != null;
+
+  let curPos, leftLabel, leftTitle;
+  const zeroPos = 50;
+  if (hasLiq) {
+    curPos = m.price >= m.breakEvenPrice
+      ? 50 + Math.min(50, (m.price - m.breakEvenPrice) / (m.targetPrice - m.breakEvenPrice) * 50)
+      : 50 - Math.min(50, (m.breakEvenPrice - m.price) / (m.breakEvenPrice - m.liqPrice) * 50);
+    leftLabel = fmtUsd0(m.liqPrice);
+    leftTitle = "Precio de liquidación reportado por BingX (margen cruzado)";
+  } else {
+    const SPAN = 15;
+    const g = Math.max(-SPAN, Math.min(SPAN, m.combinedGainPct));
+    curPos = (g + SPAN) / (SPAN * 2) * 100;
+    leftLabel = "-15%";
+    leftTitle = "Sin precio de liquidación disponible todavía";
+  }
   const fillLeft = Math.min(zeroPos, curPos), fillWidth = Math.abs(curPos - zeroPos);
   const color = m.combinedGainPct >= 0 ? "var(--gr)" : "var(--rd)";
+
+  // How much of the drop to liquidation has actually been travelled --
+  // the number the left half of the bar is showing.
+  const toLiqPct = hasLiq ? (m.price - m.liqPrice) / m.price * 100 : null;
 
   box.innerHTML = `
     <div class="eyebrow mt" style="margin-bottom:2px">Balas usadas en la ronda ${m.currentRound}</div>
@@ -982,16 +1031,18 @@ function renderRoundProgress(m) {
     <div class="row" style="justify-content:space-between">
       <span class="note" style="margin:0">${used} de ${MAX_BULLETS_PER_ROUND} · las restantes son el margen para seguir recargando si el precio baja</span>
     </div>
-    <div class="eyebrow" style="margin-top:18px">Avance hacia el objetivo de la ronda</div>
+    <div class="eyebrow" style="margin-top:18px">Liquidación · break-even · objetivo</div>
     <div class="track">
       <div class="track-bg"></div>
       <div class="track-fill" style="left:${fillLeft}%;width:${fillWidth}%;background:${color}"></div>
-      <div class="track-zero" style="left:${zeroPos}%"></div>
-      <div class="track-mark" style="left:${curPos}%"></div>
-      <div class="track-goal" style="left:100%">+15%</div>
+      <div class="track-zero" style="left:${zeroPos}%" title="Break-even: ${fmtUsd0(m.breakEvenPrice)}"></div>
+      <div class="track-mark" style="left:${curPos}%" title="Precio actual: ${fmtUsd0(m.price)}"></div>
+      <div class="track-end" style="left:0" title="${leftTitle}">${leftLabel}</div>
+      <div class="track-goal" style="left:100%" title="Cierra la ronda: ${fmtUsd0(m.targetPrice)}">+15%</div>
     </div>
     <div class="row" style="justify-content:space-between">
       <span class="note mono ${clsSign(m.combinedGainPct)}" style="margin:0">${fmtPct(m.combinedGainPct)} combinado</span>
+      ${hasLiq ? `<span class="note" style="margin:0">liquida a <b class="mono" style="color:var(--tx)">${fmtUsd0(m.liqPrice)}</b> <span class="dim">(−${fmtNum(toLiqPct, 1)}%)</span></span>` : ""}
       <span class="note" style="margin:0">cierra en <b class="mono" style="color:var(--tx)">${fmtUsd0(m.targetPrice)}</b></span>
     </div>`;
 }

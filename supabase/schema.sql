@@ -125,5 +125,10 @@ create table if not exists price_ticks (
 create table if not exists account_ticks (
     id bigint generated always as identity primary key,
     created_at timestamptz not null default now(),
-    vst_total numeric not null
+    vst_total numeric not null,
+    -- BingX's OWN cross-margin liquidation price for the open position
+    -- (null when flat). Must come from the exchange: under cross margin
+    -- it depends on the whole account balance, so it cannot be derived
+    -- from a single bullet's collateral.
+    liquidation_price numeric
 );

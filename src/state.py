@@ -276,12 +276,19 @@ def record_price_tick(price: float, change_24h_pct: Optional[float] = None) -> O
 # isn't a meaningful "money in account" figure -- current DCA value is
 # computed directly from dca_purchases instead (see dashboard/index.html).
 
-def record_account_tick(vst_total: float) -> Optional[dict]:
+def record_account_tick(vst_total: float,
+                        liquidation_price: Optional[float] = None) -> Optional[dict]:
     """Persist a lightweight account_ticks row. No-op if Supabase isn't
-    configured."""
+    configured.
+
+    `liquidation_price` is BingX's OWN cross-margin figure for the open
+    position (None when flat). It is stored per tick rather than derived
+    in the dashboard because under cross margin it moves with the account
+    balance, not just with price -- see bingx_client.get_liquidation_price."""
     if not db.is_enabled():
         return None
     client = db.get_client()
     return client.table("account_ticks").insert({
         "vst_total": vst_total,
+        "liquidation_price": liquidation_price,
     }).execute().data[0]

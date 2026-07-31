@@ -23,6 +23,7 @@ import pytest
 
 from src import state as state_module
 from src import bullets
+from src import bingx_client
 from src.strategy_tools import simulate_bullet_math
 
 
@@ -722,3 +723,71 @@ def test_get_daily_alert_can_report_both_conditions_together(monkeypatch):
     assert alert is not None
     assert "objetivo" in alert
     assert "liquidaci" in alert.lower()
+
+
+# ---------------------------------------------------------------------
+# BingX cross-margin liquidation price (src/bingx_client.py)
+# ---------------------------------------------------------------------
+
+def test_liquidation_price_reads_the_raw_info_field(monkeypatch):
+    """ccxt's unified `liquidationPrice` comes back None for cross-margin
+    positions on BingX (confirmed 2026-07-31 against the live demo
+    account); the real number only exists in the raw `info` payload."""
+    monkeypatch.setattr(bingx_client, "get_open_positions", lambda **k: [
+        {"liquidationPrice": None, "info": {"liquidationPrice": 414.7}},
+    ])
+    assert bingx_client.get_liquidation_price() == pytest.approx(414.7)
+
+
+def test_liquidation_price_accepts_a_string_payload(monkeypatch):
+    # Most BingX raw numeric fields arrive as strings; this one happened to
+    # come back as a float, so don't rely on either.
+    monkeypatch.setattr(bingx_client, "get_open_positions", lambda **k: [
+        {"info": {"liquidationPrice": "51234.5"}},
+    ])
+    assert bingx_client.get_liquidation_price() == pytest.approx(51234.5)
+
+
+def test_liquidation_price_is_none_when_flat(monkeypatch):
+    monkeypatch.setattr(bingx_client, "get_open_positions", lambda **k: [])
+    assert bingx_client.get_liquidation_price() is None
+
+
+@pytest.mark.parametrize("raw", [None, "", 0, "0", "abc", -5])
+def test_liquidation_price_rejects_non_prices(monkeypatch, raw):
+    """BingX reports 0 for "not applicable". A long's liquidation is always
+    a positive price, and a junk value must not reach the dashboard as a
+    bar endpoint."""
+    monkeypatch.setattr(bingx_client, "get_open_positions", lambda **k: [
+        {"info": {"liquidationPrice": raw}},
+    ])
+    assert bingx_client.get_liquidation_price() is None
+
+
+def test_liquidation_price_skips_a_junk_position_and_uses_the_next(monkeypatch):
+    monkeypatch.setattr(bingx_client, "get_open_positions", lambda **k: [
+        {"info": {"liquidationPrice": 0}},
+        {"info": {"liquidationPrice": 414.7}},
+    ])
+    assert bingx_client.get_liquidation_price() == pytest.approx(414.7)
+
+
+def test_record_account_tick_sends_the_liquidation_price(monkeypatch):
+    """Regression guard: the column is nullable, so a silently-dropped
+    value would look exactly like "no open position" in the dashboard."""
+    captured = {}
+
+    class _Table:
+        def insert(self, payload):
+            captured.update(payload)
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": [dict(captured)]})()
+
+    monkeypatch.setattr(state_module.db, "is_enabled", lambda: True)
+    monkeypatch.setattr(state_module.db, "get_client",
+                        lambda: type("C", (), {"table": lambda self, name: _Table()})())
+
+    state_module.record_account_tick(137498.41, liquidation_price=414.7)
+    assert captured == {"vst_total": 137498.41, "liquidation_price": 414.7}

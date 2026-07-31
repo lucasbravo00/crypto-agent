@@ -42,6 +42,7 @@ to this section.
 """
 from __future__ import annotations
 import os
+from typing import Optional
 
 import ccxt
 
@@ -106,6 +107,38 @@ def get_open_positions(**_ignored) -> list[dict]:
     # fetch_positions can include zero-size/closed entries; keep only
     # positions that actually have size.
     return [p for p in positions if p.get("contracts") not in (None, 0)]
+
+
+def get_liquidation_price(**_ignored) -> Optional[float]:
+    """BingX's OWN liquidation price for the open BTC-USDT position, or
+    None when flat.
+
+    Read from the RAW `info` payload deliberately: ccxt's unified
+    `liquidationPrice` field comes back None for cross-margin positions
+    on BingX (confirmed 2026-07-31 against the live demo account), while
+    `info["liquidationPrice"]` carries the real number.
+
+    This MUST come from the exchange rather than be recomputed locally.
+    The strategy runs in cross margin, where the liquidation price is a
+    function of the whole account balance, not of one position's own
+    collateral -- with ~109k VST free backing a 137k VST position, BingX
+    reported $414.70 while an isolated-margin approximation of the same
+    position sat around $50k. strategy_tools' approx_liquidation_price
+    still models the isolated case and is not a substitute here.
+    """
+    for position in get_open_positions():
+        raw = (position.get("info") or {}).get("liquidationPrice")
+        if raw in (None, "", 0, "0"):
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        # BingX reports 0 for "not applicable"; a real long liquidation is
+        # always a positive price.
+        if value > 0:
+            return value
+    return None
 
 
 def get_trade_history(**_ignored) -> list[dict]:
