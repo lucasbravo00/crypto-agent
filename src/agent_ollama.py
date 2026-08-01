@@ -41,11 +41,64 @@ Key differences vs agent.py (interview-worthy details):
 from __future__ import annotations
 import json
 import os
+import re
 from datetime import datetime, timezone
 
 import ollama
 
 from . import bullets, market_data, memory
+
+# Trigger phrases for a leaked "meta-commentary" preamble -- the model
+# narrating its own answering process instead of just answering.
+# Real example that motivated this (2026-08-01, REPORT_LANGUAGE=es):
+#   "Con eso, puedo finalizar la respuesta. El precio de BTC/USDT..."
+# Covers only en/es (the two languages actually used by REPORT_LANGUAGE
+# so far) -- a report in another language would not be caught here.
+_PREAMBLE_TRIGGERS = re.compile(
+    r"\b("
+    r"con (eso|esto|esta información|esa información)|"
+    r"aquí (te )?(tienes|dejo|va|está)|"
+    r"basá?ndome en|basado en (lo|los|las)|"
+    r"puedo (ahora )?(finalizar|responder|concluir|dar)|"
+    r"he (recopilado|reunido|obtenido)|"
+    r"esta es (mi|la) respuesta|mi respuesta (es|sería)|"
+    r"como (un )?modelo de lenguaje|como (una )?ia\b|"
+    r"with that|here is|here's|i can now (finish|answer|conclude)|"
+    r"based on the tools|as an ai|i have gathered|below is my"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _strip_leaked_preamble(text: str) -> str:
+    """Drop a leading sentence in which the model narrates its own
+    answering process instead of answering (see _PREAMBLE_TRIGGERS'
+    docstring for the real example that prompted this).
+
+    Deliberately narrow: only strips the FIRST sentence, and only when it
+    both matches a trigger phrase AND contains no digit. The digit check
+    is the safety rail -- a real market sentence almost always carries a
+    price or a percentage, while an empty preamble like "Con eso, puedo
+    finalizar la respuesta." never does. Without it, a legitimate opening
+    sentence that happens to start with "Con el..." could be stripped by
+    mistake. This is a narrow patch for a specific observed failure, not
+    a general profanity/quality filter -- most malformed output is still
+    left to the prompt (see _market_analyst_prompt's rule 0)."""
+    if not text:
+        return text
+    # ":" and newline count as sentence boundaries too, not just ". "/"! " --
+    # "Aquí tienes el informe: Bitcoin..." has no period before the real
+    # content, and without this the "first sentence" swallows the whole
+    # text, leaves nothing after it, and the empty-report guard below
+    # silently gives up and returns the untouched original.
+    match = re.match(r"\s*(.+?[.!:])(\s+|$)", text, re.DOTALL)
+    if not match:
+        return text
+    first_sentence = match.group(1)
+    if _PREAMBLE_TRIGGERS.search(first_sentence) and not re.search(r"\d", first_sentence):
+        rest = text[match.end():].lstrip()
+        return rest or text   # never return an empty report over a suspicious one
+    return text
 
 # Local model to use. Must be pulled beforehand:
 #   ollama pull llama3.1
@@ -104,6 +157,16 @@ def _market_analyst_prompt() -> str:
 assistant. Your job is the market-context section of a daily report —
 nothing about the user's own portfolio, that's a separate sub-agent.
 
+0. YOUR OUTPUT IS THE REPORT ITSELF, delivered straight to the user by
+   email/Telegram — it is never shown to anyone who saw your tool calls or
+   this prompt. NEVER write about the process of answering: no "with
+   that, I can finish my answer", no "here is my report", no "based on
+   the tools I called", no "as an AI/model", no meta-commentary about
+   having gathered information. The very first character you output must
+   be the first word of the actual market take. Bad (real leaked output,
+   never do this): "Con eso, puedo finalizar la respuesta. El precio de
+   BTC/USDT está en 63.044,53 USDT...". Good: "Bitcoin bajó a 63.044 USDT,
+   sin cambios de fondo en la tendencia...".
 1. You MUST call every one of these tools before writing your answer:
    get_current_date, get_price, get_indicators, get_cycle_metrics,
    get_fear_greed_index, get_btc_dominance, get_predictive_ranges,
@@ -236,6 +299,13 @@ def run_daily_report(symbol: str = "BTC/USDT") -> str:
         _market_analyst_prompt(),
         f"Build the market-context section of the daily report for {symbol}.",
     )
+    # Safety net for a real, observed failure (2026-08-01): after several
+    # rounds of "you still need to call these tools" nudging, this local
+    # model sometimes narrates its own answering process as the opening
+    # sentence ("Con eso, puedo finalizar la respuesta.") instead of just
+    # answering. Rule 0 of the prompt above asks it not to; this catches
+    # what slips through anyway (see _strip_leaked_preamble's docstring).
+    market_text = _strip_leaked_preamble(market_text)
     alert = bullets.get_daily_alert()
     if not alert:
         return market_text

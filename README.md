@@ -228,6 +228,28 @@ supabase/migration_*.sql   -> incremental migrations, run in order if your proje
   from a prompt. Related fabrications caught in testing and fixed by
   tightening the analyst's prompt: an indicator we never gave it (MACD),
   BTC dominance mislabeled as another coin's, and a made-up future price.
+- **Leaked meta-commentary (2026-08-01, `agent_ollama.py` only)**: after
+  several rounds of "you still need to call these tools" nudging, the
+  local model would sometimes open the report narrating its own
+  answering process instead of answering — a real, delivered example:
+  *"Con eso, puedo finalizar la respuesta. El precio de BTC/USDT
+  está..."*. Fixed two ways: rule 0 of the prompt now states explicitly
+  that the model's output IS the report (never text about writing it),
+  with that exact bad example inline; and `_strip_leaked_preamble()` is a
+  code-level safety net that drops a leading sentence matching a curated
+  list of self-referential trigger phrases (en/es), but ONLY when that
+  sentence carries no digit — a real market sentence almost always has a
+  price or a percentage, so the digit check is what keeps a legitimate
+  opening like "Con el RSI en 44…" from being stripped by mistake. Tested
+  in `test_agent_ollama.py`, including the false-positive case above and
+  a documented gap: a preamble joined to the real content by a comma
+  instead of a full stop isn't reliably separable without risking that
+  same false positive, so it's left to the prompt alone.
+  **Still open**: the 3-4-sentence / ~70-word style budget in rule 5 is
+  a request, not a guarantee — re-tested the same day, three consecutive
+  real runs stayed on-topic and leak-free but ran 42-76 words across
+  4-5 sentences each, not the 3-4 asked for. `LLM_BACKEND=claude` follows
+  it far more reliably; this is the known cost of the free, local option.
 - **Retries with backoff** on all network calls (public APIs fail
   sporadically).
 - **Structured JSONL logging** of every tool call, its input and its
