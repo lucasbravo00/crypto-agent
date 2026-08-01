@@ -368,10 +368,10 @@
   <form class="login-card" id="login-form">
     <div class="mark">₿</div>
     <h1>Crypto Agent</h1>
-    <p>Panel de seguimiento de la estrategia DCA + balas. Solo lectura: no ejecuta operaciones.</p>
+    <p data-i18n="loginTagline"></p>
     <div class="field"><input type="email" id="email" placeholder="Email" autocomplete="username" required /></div>
-    <div class="field"><input type="password" id="password" placeholder="Contraseña" autocomplete="current-password" required /></div>
-    <button type="submit" class="btn-primary" id="login-btn">Entrar</button>
+    <div class="field"><input type="password" id="password" data-i18n-placeholder="passwordPlaceholder" autocomplete="current-password" required /></div>
+    <button type="submit" class="btn-primary" id="login-btn" data-i18n="loginButton"></button>
     <div class="error" id="login-error"></div>
   </form>
 </div>
@@ -393,10 +393,10 @@
         <span class="p mono" id="live-price">—</span>
         <span class="c mono" id="live-change"></span>
       </div>
-      <button class="icon-btn" id="refresh-btn" title="Recargar datos" aria-label="Recargar">
+      <button class="icon-btn" id="refresh-btn" data-i18n-title="refreshTitle">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>
       </button>
-      <button class="icon-btn" id="logout-btn" title="Cerrar sesión" aria-label="Cerrar sesión">
+      <button class="icon-btn" id="logout-btn" data-i18n-title="logoutTitle">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
       </button>
     </div>
@@ -406,7 +406,7 @@
     <!-- ---- HERO ---- -->
     <div class="hero">
       <div class="hero-main">
-        <div class="eyebrow">Patrimonio total estimado</div>
+        <div class="eyebrow" data-i18n="heroEyebrow"></div>
         <div class="hero-value" id="hero-total">—</div>
         <div class="hero-delta" id="hero-delta"></div>
         <div class="split">
@@ -419,38 +419,38 @@
           <div class="eyebrow">Fear &amp; Greed</div>
           <div id="gauge-fg"></div>
           <div class="gauge-val" id="fg-value">—</div>
-          <div class="gauge-sub" id="fg-label">sin datos</div>
+          <div class="gauge-sub" id="fg-label" data-i18n="fgNoData"></div>
         </div>
         <div class="gauge-card">
           <div class="eyebrow">Mayer Multiple</div>
           <div id="gauge-mayer"></div>
           <div class="gauge-val" id="mayer-value">—</div>
-          <div class="gauge-sub" id="mayer-label">precio ÷ SMA200d</div>
+          <div class="gauge-sub" id="mayer-label" data-i18n="mayerLabelDefault"></div>
         </div>
       </div>
     </div>
 
     <!-- ---- TABS ---- -->
     <nav class="tabs" id="tabs">
-      <button class="tab active" data-tab="resumen">Resumen</button>
-      <button class="tab" data-tab="ciclo">Ciclo de mercado</button>
-      <button class="tab" data-tab="dca">DCA <span class="count" id="cnt-dca">0</span></button>
-      <button class="tab" data-tab="balas">Balas <span class="count" id="cnt-bullets">0</span></button>
-      <button class="tab" data-tab="informe">Informe</button>
+      <button class="tab active" data-tab="resumen" data-i18n="tabResumen"></button>
+      <button class="tab" data-tab="ciclo" data-i18n="tabCiclo"></button>
+      <button class="tab" data-tab="dca"><span data-i18n="tabDca"></span> <span class="count" id="cnt-dca">0</span></button>
+      <button class="tab" data-tab="balas"><span data-i18n="tabBalas"></span> <span class="count" id="cnt-bullets">0</span></button>
+      <button class="tab" data-tab="informe" data-i18n="tabInforme"></button>
     </nav>
 
     <!-- ---- PANEL: RESUMEN ---- -->
     <div class="panel active" id="panel-resumen">
       <div class="grid-2">
         <div class="block">
-          <div class="block-head"><h3>DCA · spot</h3><span class="tag real">dinero real</span></div>
+          <div class="block-head"><h3>DCA · spot</h3><span class="tag real" data-i18n="tagRealMoney"></span></div>
           <div class="block-body">
             <div class="stats" id="dca-stats"></div>
-            <p class="note mt">BTC comprado de forma recurrente y sostenido a largo plazo. Puede estar en Nexo generando APR entre compras, así que el saldo del wallet spot de BingX no representa esta posición.</p>
+            <p class="note mt" data-i18n-html="dcaNoteHtml"></p>
           </div>
         </div>
         <div class="block">
-          <div class="block-head"><h3>Balas · futuros apalancados</h3><span class="tag demo">demo / VST</span></div>
+          <div class="block-head"><h3 data-i18n="bulletsSectionTitle"></h3><span class="tag demo">demo / VST</span></div>
           <div class="block-body">
             <div class="stats" id="bullets-stats"></div>
             <div id="round-progress"></div>
@@ -460,45 +460,45 @@
 
       <div class="grid-2 mt">
         <div class="chart-box">
-          <h4>Precio BTC <span class="chip" id="chip-recent">15 min</span></h4>
-          <p class="sub">Serie intradiaria escrita por el agente cada 15 minutos.</p>
+          <h4><span data-i18n="chartRecentPriceTitle"></span> <span class="chip" id="chip-recent">15 min</span></h4>
+          <p class="sub" data-i18n="chartRecentPriceSub"></p>
           <canvas id="chart-price"></canvas>
         </div>
         <div class="chart-box">
-          <h4>Dominancia BTC <span class="chip" id="chip-dom">%</span></h4>
-          <p class="sub">Solo acumula desde que corre este agente — se extiende día a día. No hay fuente histórica gratuita confiable para dominancia.</p>
+          <h4><span data-i18n="chartDominanceTitle"></span> <span class="chip" id="chip-dom">%</span></h4>
+          <p class="sub" data-i18n-html="chartDominanceSubHtml"></p>
           <canvas id="chart-dominance"></canvas>
         </div>
       </div>
 
       <div class="block mt" id="compare-block">
-        <div class="block-head"><h3>Variación respecto a ayer</h3></div>
+        <div class="block-head"><h3 data-i18n="compareTitle"></h3></div>
         <div class="block-body"><div class="stats wide" id="compare-stats"></div></div>
       </div>
     </div>
 
     <!-- ---- PANEL: CICLO ---- -->
     <div class="panel" id="panel-ciclo">
-      <p class="note">Historial diario completo de BTC/USDT desde 2017 (Binance) y del Fear &amp; Greed Index desde 2018 (alternative.me). No dependen de cuánto tiempo lleva corriendo el agente, así que dan contexto real de en qué momento del ciclo estamos.</p>
+      <p class="note" data-i18n-html="cycleNoteHtml"></p>
       <div class="grid-2x2">
         <div class="chart-box">
-          <h4>Precio BTC · escala logarítmica</h4>
-          <p class="sub">Todo el historial disponible. La escala log hace comparables los ciclos entre sí.</p>
+          <h4 data-i18n="chartPriceHistoryTitle"></h4>
+          <p class="sub" data-i18n="chartPriceHistorySub"></p>
           <canvas id="chart-price-history"></canvas>
         </div>
         <div class="chart-box">
           <h4>Mayer Multiple <span class="chip" id="chip-mayer">—</span></h4>
-          <p class="sub">Precio ÷ promedio móvil de 200 días. Históricamente &gt;2.4 marcó zonas de techo de ciclo y &lt;1 zonas de piso.</p>
+          <p class="sub" data-i18n-html="chartMayerHistorySubHtml"></p>
           <canvas id="chart-mayer-history"></canvas>
         </div>
         <div class="chart-box">
-          <h4>Distancia a la SMA de 200 semanas <span class="chip" id="chip-200w">—</span></h4>
-          <p class="sub">Cuánto está el precio por encima o debajo de su promedio de ~4 años. Indicador clásico de ciclo largo.</p>
+          <h4><span data-i18n="chart200wTitle"></span> <span class="chip" id="chip-200w">—</span></h4>
+          <p class="sub" data-i18n="chart200wSub"></p>
           <canvas id="chart-sma200w-history"></canvas>
         </div>
         <div class="chart-box">
-          <h4>Fear &amp; Greed Index · histórico</h4>
-          <p class="sub">Sentimiento agregado del mercado, 0 = miedo extremo, 100 = codicia extrema.</p>
+          <h4 data-i18n-html="chartFngHistoryTitleHtml"></h4>
+          <p class="sub" data-i18n="chartFngHistorySub"></p>
           <canvas id="chart-fg-history"></canvas>
         </div>
       </div>
@@ -508,12 +508,12 @@
     <div class="panel" id="panel-dca">
       <div class="block">
         <div class="block-head">
-          <h3>Compras DCA</h3><span class="tag real">dinero real</span>
+          <h3 data-i18n="dcaPanelTitle"></h3><span class="tag real" data-i18n="tagRealMoney"></span>
           <div class="spacer"></div>
           <span class="chip" id="dca-total-chip">—</span>
         </div>
         <div class="block-body">
-          <p class="note">Compras de BTC sincronizadas automáticamente desde tu cuenta spot de BingX, más las que registres a mano con <code>main.py buy</code>. Los precios ya vienen ajustados por la comisión del exchange (precio efectivo), así que el P&amp;L de abajo es neto.</p>
+          <p class="note" data-i18n-html="dcaPanelNoteHtml"></p>
         </div>
         <div class="table-scroll" id="dca-table"></div>
       </div>
@@ -523,12 +523,12 @@
     <div class="panel" id="panel-balas">
       <div class="block">
         <div class="block-head">
-          <h3>Balas por ronda</h3><span class="tag demo">demo / VST</span>
+          <h3 data-i18n="bulletsPanelTitle"></h3><span class="tag demo">demo / VST</span>
           <div class="spacer"></div>
           <span class="chip" id="bullets-total-chip">—</span>
         </div>
         <div class="block-body">
-          <p class="note">Trading apalancado sobre la cuenta Demo/VST de BingX (dinero virtual). Las balas se acumulan por ronda: hasta 30 por ronda, máximo 1 nueva por día, y cuando la posición combinada llega a +15% se cierran todas juntas y arranca una ronda nueva. El P&amp;L de las balas abiertas es no realizado y se recalcula con el precio en vivo.</p>
+          <p class="note" data-i18n-html="bulletsPanelNoteHtml"></p>
         </div>
         <div class="table-scroll" id="bullets-table"></div>
       </div>
@@ -538,14 +538,14 @@
     <div class="panel" id="panel-informe">
       <div id="report-latest"></div>
       <div class="block mt" id="archive-block">
-        <div class="block-head"><h3>Informes anteriores</h3></div>
+        <div class="block-head"><h3 data-i18n="reportArchiveTitle"></h3></div>
         <div id="report-archive"></div>
       </div>
     </div>
 
     <div class="disclaimer">
-      Este dashboard solo muestra datos. No ejecuta operaciones ni da señales de compra/venta.<br />
-      Todas las decisiones y ejecuciones son manuales, a cargo del usuario.
+      <span data-i18n="disclaimerLine1"></span><br />
+      <span data-i18n="disclaimerLine2"></span>
     </div>
   </div>
 </div>
@@ -566,6 +566,283 @@ const charts = {};
 const MAX_BULLETS_PER_ROUND = 30;
 const TARGET_GAIN_PCT = 15;
 
+// ============ LANGUAGE ============
+// Which language the DASHBOARD renders in. Deliberately separate from
+// REPORT_LANGUAGE (src/agent.py's env var, read server-side): this file
+// is a single, build-step-free static page with no server to inject an
+// env var into the browser at request time, so its language has to be a
+// plain JS constant edited once per deployment -- same pattern already
+// used for SUPABASE_URL/SUPABASE_ANON_KEY just above. Change this one
+// value and redeploy; see README.md's "Web dashboard" section for how to
+// add a language beyond the three shipped here (es/en/pt).
+const DASHBOARD_LANGUAGE = "es";
+
+// One locale per language, used for toLocaleString/toLocaleDateString
+// (number grouping, decimal comma/point, date order). "es-AR" is what the
+// dashboard always used before this was configurable, kept as the default
+// so nothing shifts for existing es deployments.
+const LOCALE_BY_LANG = { es: "es-AR", en: "en-US", pt: "pt-BR" };
+
+// Every UI string, grouped by language. Proper nouns and index names that
+// read the same in all three languages on purpose (e.g. "Fear & Greed",
+// "Mayer Multiple", "BingX", "VST", "DCA") are left as plain literals in
+// the markup/JS below instead of listed here -- adding a key for a string
+// that never changes only makes it easier for a future edit to
+// accidentally desync the translations.
+const I18N = {
+  es: {
+    loginTagline: "Panel de seguimiento de la estrategia DCA + balas. Solo lectura: no ejecuta operaciones.",
+    passwordPlaceholder: "Contraseña",
+    loginButton: "Entrar",
+    loginErrorPrefix: "No se pudo iniciar sesión: ",
+    refreshTitle: "Recargar datos",
+    logoutTitle: "Cerrar sesión",
+    heroEyebrow: "Patrimonio total estimado",
+    fgNoData: "sin datos",
+    mayerLabelDefault: "precio ÷ SMA200d",
+    mayerZoneTop: "zona históricamente de techo",
+    mayerZoneBottom: "zona históricamente de piso",
+    mayerZoneMid: "rango intermedio",
+    dcaLegend: "DCA real (BTC)",
+    vstLegend: "Demo BingX (VST)",
+    dcaPnlSuffix: " · resultado no realizado del DCA",
+    tabResumen: "Resumen", tabCiclo: "Ciclo de mercado", tabDca: "DCA",
+    tabBalas: "Balas", tabInforme: "Informe",
+    tagRealMoney: "dinero real",
+    dcaNoteHtml: "BTC comprado de forma recurrente y sostenido a largo plazo. Puede estar en Nexo generando APR entre compras, así que el saldo del wallet spot de BingX no representa esta posición.",
+    bulletsSectionTitle: "Balas · futuros apalancados",
+    chartRecentPriceTitle: "Precio BTC",
+    chartRecentPriceSub: "Serie intradiaria escrita por el agente cada 15 minutos.",
+    chartDominanceTitle: "Dominancia BTC",
+    chartDominanceSubHtml: "Solo acumula desde que corre este agente — se extiende día a día. No hay fuente histórica gratuita confiable para dominancia.",
+    compareTitle: "Variación respecto a ayer",
+    cycleNoteHtml: "Historial diario completo de BTC/USDT desde 2017 (Binance) y del Fear &amp; Greed Index desde 2018 (alternative.me). No dependen de cuánto tiempo lleva corriendo el agente, así que dan contexto real de en qué momento del ciclo estamos.",
+    chartPriceHistoryTitle: "Precio BTC · escala logarítmica",
+    chartPriceHistorySub: "Todo el historial disponible. La escala log hace comparables los ciclos entre sí.",
+    chartMayerHistorySubHtml: "Precio ÷ promedio móvil de 200 días. Históricamente &gt;2.4 marcó zonas de techo de ciclo y &lt;1 zonas de piso.",
+    chart200wTitle: "Distancia a la SMA de 200 semanas",
+    chart200wSub: "Cuánto está el precio por encima o debajo de su promedio de ~4 años. Indicador clásico de ciclo largo.",
+    chartFngHistoryTitleHtml: "Fear &amp; Greed Index · histórico",
+    chartFngHistorySub: "Sentimiento agregado del mercado, 0 = miedo extremo, 100 = codicia extrema.",
+    dcaPanelTitle: "Compras DCA",
+    dcaPanelNoteHtml: 'Compras de BTC sincronizadas automáticamente desde tu cuenta spot de BingX, más las que registres a mano con <code>main.py buy</code>. Los precios ya vienen ajustados por la comisión del exchange (precio efectivo), así que el P&amp;L de abajo es neto.',
+    dcaTableDate: "Fecha", dcaTableAmount: "Monto", dcaTableEffectivePrice: "Precio efectivo",
+    dcaTableValueToday: "Valor hoy",
+    dcaEmptyState: "Sin compras DCA registradas todavía.",
+    dcaInvestedChip: "{amount} invertidos",
+    bulletsPanelTitle: "Balas por ronda",
+    bulletsPanelNoteHtml: "Trading apalancado sobre la cuenta Demo/VST de BingX (dinero virtual). Las balas se acumulan por ronda: hasta 30 por ronda, máximo 1 nueva por día, y cuando la posición combinada llega a +15% se cierran todas juntas y arranca una ronda nueva. El P&amp;L de las balas abiertas es no realizado y se recalcula con el precio en vivo.",
+    bulletsTableStatus: "Estado", bulletsTableCollateral: "Colateral", bulletsTableEntry: "Entrada",
+    bulletsTableTarget: "Objetivo", bulletsTableLiq: "Liq. aprox", bulletsTableClose: "Cierre",
+    bulletsTableOrigin: "Origen",
+    bulletsEmptyLine1: "Sin balas todavía.", bulletsEmptyLine2: "La fase de balas arranca cuando se abra la primera.",
+    bulletsChipOpen: "{n} abierta(s) · ronda {r}", bulletsChipNone: "sin balas abiertas",
+    roundLabel: "Ronda {r}", bulletsCount: "{n} bala(s)",
+    badgeOngoing: "en curso", badgeClosedTp: "cerrada en objetivo", badgeClosedOther: "cerrada",
+    unrealizedTooltip: "No realizado, con precio en vivo", unrealizedAbbr: "nr",
+    statusOpen: "abierta", statusTracking: "en seguimiento", statusClosedTp: "cerrada (objetivo)",
+    statusClosedManual: "cerrada (manual)", statusClosedLiquidated: "liquidada",
+    reportArchiveTitle: "Informes anteriores", reportAgentLabel: "Informe del agente",
+    reportArchivedChip: "archivo", reportEmptyState: "Sin informes generados todavía.",
+    disclaimerLine1: "Este dashboard solo muestra datos. No ejecuta operaciones ni da señales de compra/venta.",
+    disclaimerLine2: "Todas las decisiones y ejecuciones son manuales, a cargo del usuario.",
+    roundProgressEmpty: "La ronda arranca cuando se abre la primera bala. Máximo 1 por día.",
+    bulletsUsedInRound: "Balas usadas en la ronda {r}",
+    bulletsUsedNote: "{used} de {max} · las restantes son el margen para seguir recargando si el precio baja",
+    progressEyebrow: "Liquidación · break-even · objetivo",
+    breakEvenTitle: "Break-even: {price}", currentPriceTitle: "Precio actual: {price}",
+    liqTitleKnown: "Precio de liquidación reportado por BingX (margen cruzado)",
+    liqTitleUnknown: "Sin precio de liquidación disponible todavía",
+    targetTitle: "Cierra la ronda: {price}",
+    combinedLabel: "{pct} combinado", liquidatesAtLabel: "liquida a", closesAtLabel: "cierra en",
+    vsYesterday: "vs. ayer", vsDaysAgo: "vs. hace {n} días",
+    statValorActual: "Valor actual", statInvertido: "Invertido", statResultado: "Resultado",
+    statPrecioMedio: "Precio medio", purchasesCount: "{n} compra(s)", vsSpot: "{pct} vs. spot",
+    statBalanceDemo: "Balance demo (VST)", statPnlRealizado: "P&L realizado",
+    testCapital: "capital de prueba", roundsInfo: "{n} ronda(s) · {n2} en TP",
+    bulletsAvailable: "{n} balas disponibles", statPnlCurso: "P&L en curso",
+    liveNow: "en vivo · {time}", lastSnapshot: "últ. snapshot {date}", noDataYet: "sin datos todavía",
+    every15min: "cada 15 min", daily: "diario",
+  },
+  en: {
+    loginTagline: "Dashboard for the DCA + bullets strategy. Read-only: it never executes trades.",
+    passwordPlaceholder: "Password",
+    loginButton: "Log in",
+    loginErrorPrefix: "Could not sign in: ",
+    refreshTitle: "Reload data",
+    logoutTitle: "Log out",
+    heroEyebrow: "Estimated total net worth",
+    fgNoData: "no data",
+    mayerLabelDefault: "price ÷ SMA200d",
+    mayerZoneTop: "historically a cycle-top zone",
+    mayerZoneBottom: "historically a cycle-bottom zone",
+    mayerZoneMid: "mid-range",
+    dcaLegend: "Real DCA (BTC)",
+    vstLegend: "BingX demo (VST)",
+    dcaPnlSuffix: " · unrealized DCA result",
+    tabResumen: "Summary", tabCiclo: "Market cycle", tabDca: "DCA",
+    tabBalas: "Bullets", tabInforme: "Report",
+    tagRealMoney: "real money",
+    dcaNoteHtml: "BTC bought recurringly and held long-term. It may be sitting in Nexo earning APR between purchases, so BingX's spot wallet balance does not represent this position.",
+    bulletsSectionTitle: "Bullets · leveraged futures",
+    chartRecentPriceTitle: "BTC price",
+    chartRecentPriceSub: "Intraday series written by the agent every 15 minutes.",
+    chartDominanceTitle: "BTC dominance",
+    chartDominanceSubHtml: "Only accumulates since this agent has been running — it grows day by day. No reliable free historical source for dominance was found.",
+    compareTitle: "Change vs. yesterday",
+    cycleNoteHtml: "Full daily BTC/USDT history since 2017 (Binance) and the Fear &amp; Greed Index since 2018 (alternative.me). Neither depends on how long this agent has been running, so they give real context on where we stand in the cycle.",
+    chartPriceHistoryTitle: "BTC price · log scale",
+    chartPriceHistorySub: "The full available history. The log scale makes the cycles comparable to each other.",
+    chartMayerHistorySubHtml: "Price ÷ 200-day moving average. Historically &gt;2.4 marked cycle-top zones and &lt;1 marked bottom zones.",
+    chart200wTitle: "Distance to the 200-week SMA",
+    chart200wSub: "How far price sits above or below its ~4-year average. A classic long-cycle indicator.",
+    chartFngHistoryTitleHtml: "Fear &amp; Greed Index · historical",
+    chartFngHistorySub: "Aggregate market sentiment, 0 = extreme fear, 100 = extreme greed.",
+    dcaPanelTitle: "DCA purchases",
+    dcaPanelNoteHtml: 'BTC purchases synced automatically from your BingX spot account, plus any you record by hand with <code>main.py buy</code>. Prices already account for the exchange fee (effective price), so the P&amp;L below is net.',
+    dcaTableDate: "Date", dcaTableAmount: "Amount", dcaTableEffectivePrice: "Effective price",
+    dcaTableValueToday: "Value today",
+    dcaEmptyState: "No DCA purchases recorded yet.",
+    dcaInvestedChip: "{amount} invested",
+    bulletsPanelTitle: "Bullets by round",
+    bulletsPanelNoteHtml: "Leveraged trading on BingX's Demo/VST account (virtual money). Bullets accumulate per round: up to 30 per round, at most 1 new one per day, and once the combined position reaches +15% they all close together and a new round starts. Open bullets' P&amp;L is unrealized and is recalculated with the live price.",
+    bulletsTableStatus: "Status", bulletsTableCollateral: "Collateral", bulletsTableEntry: "Entry",
+    bulletsTableTarget: "Target", bulletsTableLiq: "Approx. liq.", bulletsTableClose: "Close",
+    bulletsTableOrigin: "Source",
+    bulletsEmptyLine1: "No bullets yet.", bulletsEmptyLine2: "The bullets phase starts once the first one is opened.",
+    bulletsChipOpen: "{n} open · round {r}", bulletsChipNone: "no open bullets",
+    roundLabel: "Round {r}", bulletsCount: "{n} bullet(s)",
+    badgeOngoing: "ongoing", badgeClosedTp: "closed at target", badgeClosedOther: "closed",
+    unrealizedTooltip: "Unrealized, at the live price", unrealizedAbbr: "u",
+    statusOpen: "open", statusTracking: "tracking", statusClosedTp: "closed (target)",
+    statusClosedManual: "closed (manual)", statusClosedLiquidated: "liquidated",
+    reportArchiveTitle: "Previous reports", reportAgentLabel: "Agent report",
+    reportArchivedChip: "archived", reportEmptyState: "No reports generated yet.",
+    disclaimerLine1: "This dashboard only displays data. It never executes trades or gives buy/sell signals.",
+    disclaimerLine2: "All decisions and executions are manual, made by the user.",
+    roundProgressEmpty: "The round starts once the first bullet is opened. At most 1 per day.",
+    bulletsUsedInRound: "Bullets used in round {r}",
+    bulletsUsedNote: "{used} of {max} · the rest is the margin for adding more if price keeps falling",
+    progressEyebrow: "Liquidation · break-even · target",
+    breakEvenTitle: "Break-even: {price}", currentPriceTitle: "Current price: {price}",
+    liqTitleKnown: "Liquidation price reported by BingX (cross margin)",
+    liqTitleUnknown: "No liquidation price available yet",
+    targetTitle: "Closes the round: {price}",
+    combinedLabel: "{pct} combined", liquidatesAtLabel: "liquidates at", closesAtLabel: "closes at",
+    vsYesterday: "vs. yesterday", vsDaysAgo: "vs. {n} days ago",
+    statValorActual: "Current value", statInvertido: "Invested", statResultado: "Result",
+    statPrecioMedio: "Average price", purchasesCount: "{n} purchase(s)", vsSpot: "{pct} vs. spot",
+    statBalanceDemo: "Demo balance (VST)", statPnlRealizado: "Realized P&L",
+    testCapital: "test capital", roundsInfo: "{n} round(s) · {n2} at TP",
+    bulletsAvailable: "{n} bullets available", statPnlCurso: "P&L in progress",
+    liveNow: "live · {time}", lastSnapshot: "last snapshot {date}", noDataYet: "no data yet",
+    every15min: "every 15 min", daily: "daily",
+  },
+  pt: {
+    loginTagline: "Painel de acompanhamento da estratégia DCA + balas. Somente leitura: não executa operações.",
+    passwordPlaceholder: "Senha",
+    loginButton: "Entrar",
+    loginErrorPrefix: "Não foi possível entrar: ",
+    refreshTitle: "Recarregar dados",
+    logoutTitle: "Sair",
+    heroEyebrow: "Patrimônio total estimado",
+    fgNoData: "sem dados",
+    mayerLabelDefault: "preço ÷ SMA200d",
+    mayerZoneTop: "zona historicamente de topo",
+    mayerZoneBottom: "zona historicamente de fundo",
+    mayerZoneMid: "faixa intermediária",
+    dcaLegend: "DCA real (BTC)",
+    vstLegend: "Demo BingX (VST)",
+    dcaPnlSuffix: " · resultado não realizado do DCA",
+    tabResumen: "Resumo", tabCiclo: "Ciclo de mercado", tabDca: "DCA",
+    tabBalas: "Balas", tabInforme: "Relatório",
+    tagRealMoney: "dinheiro real",
+    dcaNoteHtml: "BTC comprado de forma recorrente e mantido a longo prazo. Pode estar na Nexo rendendo APR entre as compras, então o saldo da carteira spot da BingX não representa essa posição.",
+    bulletsSectionTitle: "Balas · futuros alavancados",
+    chartRecentPriceTitle: "Preço BTC",
+    chartRecentPriceSub: "Série intradiária registrada pelo agente a cada 15 minutos.",
+    chartDominanceTitle: "Dominância BTC",
+    chartDominanceSubHtml: "Só acumula desde que este agente está rodando — vai se estendendo dia a dia. Não há fonte histórica gratuita confiável para dominância.",
+    compareTitle: "Variação em relação a ontem",
+    cycleNoteHtml: "Histórico diário completo de BTC/USDT desde 2017 (Binance) e do Fear &amp; Greed Index desde 2018 (alternative.me). Não dependem de há quanto tempo este agente está rodando, então dão um contexto real de em que momento do ciclo estamos.",
+    chartPriceHistoryTitle: "Preço BTC · escala logarítmica",
+    chartPriceHistorySub: "Todo o histórico disponível. A escala log torna os ciclos comparáveis entre si.",
+    chartMayerHistorySubHtml: "Preço ÷ média móvel de 200 dias. Historicamente &gt;2.4 marcou zonas de topo de ciclo e &lt;1 zonas de fundo.",
+    chart200wTitle: "Distância à SMA de 200 semanas",
+    chart200wSub: "O quanto o preço está acima ou abaixo de sua média de ~4 anos. Indicador clássico de ciclo longo.",
+    chartFngHistoryTitleHtml: "Fear &amp; Greed Index · histórico",
+    chartFngHistorySub: "Sentimento agregado do mercado, 0 = medo extremo, 100 = ganância extrema.",
+    dcaPanelTitle: "Compras DCA",
+    dcaPanelNoteHtml: 'Compras de BTC sincronizadas automaticamente da sua conta spot da BingX, mais as que você registrar manualmente com <code>main.py buy</code>. Os preços já vêm ajustados pela taxa da corretora (preço efetivo), então o P&amp;L abaixo é líquido.',
+    dcaTableDate: "Data", dcaTableAmount: "Valor", dcaTableEffectivePrice: "Preço efetivo",
+    dcaTableValueToday: "Valor hoje",
+    dcaEmptyState: "Nenhuma compra DCA registrada ainda.",
+    dcaInvestedChip: "{amount} investidos",
+    bulletsPanelTitle: "Balas por rodada",
+    bulletsPanelNoteHtml: "Trading alavancado na conta Demo/VST da BingX (dinheiro virtual). As balas se acumulam por rodada: até 30 por rodada, no máximo 1 nova por dia, e quando a posição combinada chega a +15% todas se fecham juntas e uma nova rodada começa. O P&amp;L das balas abertas é não realizado e é recalculado com o preço ao vivo.",
+    bulletsTableStatus: "Status", bulletsTableCollateral: "Colateral", bulletsTableEntry: "Entrada",
+    bulletsTableTarget: "Objetivo", bulletsTableLiq: "Liq. aprox.", bulletsTableClose: "Fechamento",
+    bulletsTableOrigin: "Origem",
+    bulletsEmptyLine1: "Nenhuma bala ainda.", bulletsEmptyLine2: "A fase de balas começa quando a primeira for aberta.",
+    bulletsChipOpen: "{n} aberta(s) · rodada {r}", bulletsChipNone: "nenhuma bala aberta",
+    roundLabel: "Rodada {r}", bulletsCount: "{n} bala(s)",
+    badgeOngoing: "em andamento", badgeClosedTp: "fechada no objetivo", badgeClosedOther: "fechada",
+    unrealizedTooltip: "Não realizado, com preço ao vivo", unrealizedAbbr: "nr",
+    statusOpen: "aberta", statusTracking: "monitorando", statusClosedTp: "fechada (objetivo)",
+    statusClosedManual: "fechada (manual)", statusClosedLiquidated: "liquidada",
+    reportArchiveTitle: "Relatórios anteriores", reportAgentLabel: "Relatório do agente",
+    reportArchivedChip: "arquivado", reportEmptyState: "Nenhum relatório gerado ainda.",
+    disclaimerLine1: "Este painel só exibe dados. Não executa operações nem dá sinais de compra/venda.",
+    disclaimerLine2: "Todas as decisões e execuções são manuais, feitas pelo usuário.",
+    roundProgressEmpty: "A rodada começa quando a primeira bala é aberta. No máximo 1 por dia.",
+    bulletsUsedInRound: "Balas usadas na rodada {r}",
+    bulletsUsedNote: "{used} de {max} · as demais são a margem para continuar recarregando se o preço cair",
+    progressEyebrow: "Liquidação · break-even · objetivo",
+    breakEvenTitle: "Break-even: {price}", currentPriceTitle: "Preço atual: {price}",
+    liqTitleKnown: "Preço de liquidação reportado pela BingX (margem cruzada)",
+    liqTitleUnknown: "Sem preço de liquidação disponível ainda",
+    targetTitle: "Fecha a rodada: {price}",
+    combinedLabel: "{pct} combinado", liquidatesAtLabel: "liquida a", closesAtLabel: "fecha em",
+    vsYesterday: "vs. ontem", vsDaysAgo: "vs. há {n} dias",
+    statValorActual: "Valor atual", statInvertido: "Investido", statResultado: "Resultado",
+    statPrecioMedio: "Preço médio", purchasesCount: "{n} compra(s)", vsSpot: "{pct} vs. spot",
+    statBalanceDemo: "Saldo demo (VST)", statPnlRealizado: "P&L realizado",
+    testCapital: "capital de teste", roundsInfo: "{n} rodada(s) · {n2} no TP",
+    bulletsAvailable: "{n} balas disponíveis", statPnlCurso: "P&L em andamento",
+    liveNow: "ao vivo · {time}", lastSnapshot: "último snapshot {date}", noDataYet: "sem dados ainda",
+    every15min: "a cada 15 min", daily: "diário",
+  },
+};
+
+const LANG = I18N[DASHBOARD_LANGUAGE] ? DASHBOARD_LANGUAGE : "en";
+const LOCALE = LOCALE_BY_LANG[LANG] || "en-US";
+document.documentElement.lang = LANG;
+
+// t("key", {var: value}) looks up the current language, falls back to
+// English, and finally to the raw key -- so a missing translation shows
+// up as a visible mistake instead of a silent blank.
+function t(key, vars) {
+  let s = (I18N[LANG] && I18N[LANG][key]) ?? (I18N.en && I18N.en[key]) ?? key;
+  if (vars) for (const [k, v] of Object.entries(vars)) s = s.replaceAll(`{${k}}`, v);
+  return s;
+}
+
+// Static markup (login screen, panel headers/notes/table headers that
+// never change at runtime) is translated once via data-i18n* attributes,
+// rather than duplicating three copies of the HTML.
+function applyStaticI18n() {
+  document.querySelectorAll("[data-i18n]").forEach(el => { el.textContent = t(el.dataset.i18n); });
+  document.querySelectorAll("[data-i18n-html]").forEach(el => { el.innerHTML = t(el.dataset.i18nHtml); });
+  document.querySelectorAll("[data-i18n-placeholder]").forEach(el => { el.placeholder = t(el.dataset.i18nPlaceholder); });
+  document.querySelectorAll("[data-i18n-title]").forEach(el => {
+    const label = t(el.dataset.i18nTitle);
+    el.title = label;
+    el.setAttribute("aria-label", label);
+  });
+}
+applyStaticI18n();
+
+
 // Cross-cutting data kept in memory so the live-price refresh (every 30s)
 // can recompute price-dependent views without re-querying Supabase each
 // time. Populated once per full loadData() call.
@@ -580,7 +857,7 @@ let cycleChartsBuilt = false;
 const money = (n, d) => {
   if (n == null || isNaN(n)) return "—";
   const s = Number(n) < 0 ? "-" : "";
-  return s + "$" + Math.abs(Number(n)).toLocaleString("es-AR",
+  return s + "$" + Math.abs(Number(n)).toLocaleString(LOCALE,
     { minimumFractionDigits: d, maximumFractionDigits: d });
 };
 const fmtUsd  = (n) => money(n, 2);
@@ -588,11 +865,11 @@ const fmtUsd0 = (n) => money(n, 0);
 const fmtPct = (n) => n == null || isNaN(n) ? "—" : (n >= 0 ? "+" : "") + Number(n).toFixed(2) + "%";
 const fmtNum = (n, d = 2) => n == null || isNaN(n) ? "—" : Number(n).toFixed(d);
 const clsSign = (n) => n == null || isNaN(n) ? "" : (n >= 0 ? "pos" : "neg");
-const fmtDate = (s) => s ? new Date(s).toLocaleDateString("es-AR",
+const fmtDate = (s) => s ? new Date(s).toLocaleDateString(LOCALE,
   { day: "2-digit", month: "short", year: "numeric" }) : "—";
-const fmtDateShort = (s) => s ? new Date(s).toLocaleDateString("es-AR",
+const fmtDateShort = (s) => s ? new Date(s).toLocaleDateString(LOCALE,
   { day: "2-digit", month: "short" }) : "—";
-const fmtDateTime = (s) => s ? new Date(s).toLocaleString("es-AR",
+const fmtDateTime = (s) => s ? new Date(s).toLocaleString(LOCALE,
   { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
 
 // ============ AUTH ============
@@ -607,7 +884,7 @@ $("login-form").addEventListener("submit", async (e) => {
   });
   btn.disabled = false;
   if (error) {
-    $("login-error").textContent = "No se pudo iniciar sesión: " + error.message;
+    $("login-error").textContent = t("loginErrorPrefix") + error.message;
     return;
   }
   showDashboard();
@@ -657,14 +934,16 @@ async function showDashboard() {
 // resizes whatever just became visible, and the cycle charts are built
 // lazily the first time their tab is opened.
 function showTab(name) {
-  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === name));
+  // Named `tabEl`, not `t` -- this file also has a global t() for i18n
+  // strings, and a same-named forEach parameter here would shadow it.
+  document.querySelectorAll(".tab").forEach(tabEl => tabEl.classList.toggle("active", tabEl.dataset.tab === name));
   document.querySelectorAll(".panel").forEach(p => p.classList.toggle("active", p.id === "panel-" + name));
   if (name === "ciclo" && !cycleChartsBuilt) buildCycleCharts();
   requestAnimationFrame(() => Object.values(charts).forEach(c => { try { c.resize(); } catch (e) {} }));
   try { localStorage.setItem("ca_tab", name); } catch (e) {}
 }
-document.querySelectorAll(".tab").forEach(t =>
-  t.addEventListener("click", () => showTab(t.dataset.tab)));
+document.querySelectorAll(".tab").forEach(tabEl =>
+  tabEl.addEventListener("click", () => showTab(tabEl.dataset.tab)));
 
 function restoreTab() {
   let saved = null;
@@ -835,8 +1114,8 @@ function renderStatusLine(m) {
   chg.className = "c mono " + clsSign(m.change24h);
   $("live-dot").className = "dot " + (m.isLive ? "live" : "stale");
   $("last-updated").textContent = m.isLive
-    ? "en vivo · " + new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })
-    : (cache.snaps.length ? "últ. snapshot " + fmtDateTime(m.last.created_at) : "sin datos todavía");
+    ? t("liveNow", { time: new Date().toLocaleTimeString(LOCALE, { hour: "2-digit", minute: "2-digit" }) })
+    : (cache.snaps.length ? t("lastSnapshot", { date: fmtDateTime(m.last.created_at) }) : t("noDataYet"));
 }
 
 // ============ HERO ============
@@ -849,13 +1128,13 @@ function renderHero(m) {
   const d = $("hero-delta");
   if (m.dcaPnl != null) {
     d.innerHTML = `<span class="${clsSign(m.dcaPnl)}">${fmtUsd(m.dcaPnl)} (${fmtPct(m.dcaPnlPct)})</span>` +
-      `<span class="dim"> · resultado no realizado del DCA</span>`;
+      `<span class="dim">${t("dcaPnlSuffix")}</span>`;
   } else { d.textContent = ""; }
 
   const dcaV = m.dcaValue ?? 0, vstV = m.vstTotal ?? 0, tot = dcaV + vstV;
   const parts = [
-    { label: "DCA real (BTC)", v: dcaV, color: "var(--or)" },
-    { label: "Demo BingX (VST)", v: vstV, color: "var(--bl)" },
+    { label: t("dcaLegend"), v: dcaV, color: "var(--or)" },
+    { label: t("vstLegend"), v: vstV, color: "var(--bl)" },
   ].filter(p => p.v > 0);
 
   $("split-bar").innerHTML = tot > 0
@@ -904,7 +1183,7 @@ function renderFgGauge(value, classification) {
   $("fg-value").textContent = v == null ? "—" : v;
   $("fg-value").style.color = v == null ? "var(--tx-3)"
     : (v >= 55 ? "var(--gr)" : v <= 45 ? "var(--rd)" : "var(--yl)");
-  $("fg-label").textContent = classification || (v == null ? "sin datos" : "");
+  $("fg-label").textContent = classification || (v == null ? t("fgNoData") : "");
 }
 
 function renderMayerGauge(value) {
@@ -930,8 +1209,8 @@ function renderMayerGauge(value) {
   $("gauge-mayer").innerHTML = `<svg width="148" height="76" viewBox="0 0 148 76">${arcs}${needle}</svg>`;
   $("mayer-value").textContent = v == null ? "—" : fmtNum(v, 2);
   $("mayer-value").style.color = zone === 2 ? "var(--rd)" : zone === 0 ? "var(--gr)" : "var(--tx)";
-  $("mayer-label").textContent = v == null ? "precio ÷ SMA200d"
-    : zone === 2 ? "zona históricamente de techo" : zone === 0 ? "zona históricamente de piso" : "rango intermedio";
+  $("mayer-label").textContent = v == null ? t("mayerLabelDefault")
+    : zone === 2 ? t("mayerZoneTop") : zone === 0 ? t("mayerZoneBottom") : t("mayerZoneMid");
 }
 
 // ============ STAT BLOCKS ============
@@ -944,30 +1223,30 @@ const statHtml = (s) => `
 
 function renderDcaStats(m) {
   $("dca-stats").innerHTML = [
-    { l: "Valor actual", v: fmtUsd(m.dcaValue), s: fmtNum(m.totalQtyBtc, 8) + " BTC" },
-    { l: "Invertido", v: fmtUsd(m.totalInvested), s: cache.dca.length + " compra(s)" },
-    { l: "Resultado", v: fmtUsd(m.dcaPnl), vCls: clsSign(m.dcaPnl), s: fmtPct(m.dcaPnlPct), sCls: clsSign(m.dcaPnl) },
-    { l: "Precio medio", v: fmtUsd(m.avgEntry),
-      s: m.price != null && m.avgEntry ? fmtPct((m.price / m.avgEntry - 1) * 100) + " vs. spot" : "",
+    { l: t("statValorActual"), v: fmtUsd(m.dcaValue), s: fmtNum(m.totalQtyBtc, 8) + " BTC" },
+    { l: t("statInvertido"), v: fmtUsd(m.totalInvested), s: t("purchasesCount", { n: cache.dca.length }) },
+    { l: t("statResultado"), v: fmtUsd(m.dcaPnl), vCls: clsSign(m.dcaPnl), s: fmtPct(m.dcaPnlPct), sCls: clsSign(m.dcaPnl) },
+    { l: t("statPrecioMedio"), v: fmtUsd(m.avgEntry),
+      s: m.price != null && m.avgEntry ? t("vsSpot", { pct: fmtPct((m.price / m.avgEntry - 1) * 100) }) : "",
       sCls: m.price != null && m.avgEntry ? clsSign(m.price - m.avgEntry) : "" },
   ].map(statHtml).join("");
-  $("dca-total-chip").textContent = fmtUsd0(m.totalInvested) + " invertidos";
+  $("dca-total-chip").textContent = t("dcaInvestedChip", { amount: fmtUsd0(m.totalInvested) });
 }
 
 function renderBulletsStats(m) {
   const used = m.active.length;
   $("bullets-stats").innerHTML = [
-    { l: "Balance demo (VST)", v: m.vstTotal != null ? fmtUsd(m.vstTotal) : "—", s: "capital de prueba" },
-    { l: "P&L realizado", v: fmtUsd(m.realizedPnl), vCls: clsSign(m.realizedPnl),
-      s: `${m.roundsCompleted} ronda(s) · ${m.tpRounds} en TP` },
-    { l: `Ronda ${m.currentRound || "—"}`, v: used + " / " + MAX_BULLETS_PER_ROUND,
-      s: (MAX_BULLETS_PER_ROUND - used) + " balas disponibles" },
-    { l: "P&L en curso", v: used ? fmtUsd(m.combinedPnl) : "—", vCls: used ? clsSign(m.combinedPnl) : "",
-      s: used ? fmtPct(m.combinedGainPct) + " combinado" : "sin balas abiertas",
+    { l: t("statBalanceDemo"), v: m.vstTotal != null ? fmtUsd(m.vstTotal) : "—", s: t("testCapital") },
+    { l: t("statPnlRealizado"), v: fmtUsd(m.realizedPnl), vCls: clsSign(m.realizedPnl),
+      s: t("roundsInfo", { n: m.roundsCompleted, n2: m.tpRounds }) },
+    { l: t("roundLabel", { r: m.currentRound || "—" }), v: used + " / " + MAX_BULLETS_PER_ROUND,
+      s: t("bulletsAvailable", { n: MAX_BULLETS_PER_ROUND - used }) },
+    { l: t("statPnlCurso"), v: used ? fmtUsd(m.combinedPnl) : "—", vCls: used ? clsSign(m.combinedPnl) : "",
+      s: used ? t("combinedLabel", { pct: fmtPct(m.combinedGainPct) }) : t("bulletsChipNone"),
       sCls: used ? clsSign(m.combinedPnl) : "" },
   ].map(statHtml).join("");
   $("bullets-total-chip").textContent = m.active.length
-    ? `${m.active.length} abierta(s) · ronda ${m.currentRound}` : "sin balas abiertas";
+    ? t("bulletsChipOpen", { n: m.active.length, r: m.currentRound }) : t("bulletsChipNone");
 
   renderRoundProgress(m);
 }
@@ -978,7 +1257,7 @@ function renderBulletsStats(m) {
 function renderRoundProgress(m) {
   const box = $("round-progress");
   if (!m.active.length) {
-    box.innerHTML = `<p class="note mt">La ronda arranca cuando se abre la primera bala. Máximo 1 por día.</p>`;
+    box.innerHTML = `<p class="note mt">${t("roundProgressEmpty")}</p>`;
     return;
   }
   const used = m.active.length;
@@ -1010,13 +1289,13 @@ function renderRoundProgress(m) {
       ? 50 + Math.min(50, (m.price - m.breakEvenPrice) / (m.targetPrice - m.breakEvenPrice) * 50)
       : 50 - Math.min(50, (m.breakEvenPrice - m.price) / (m.breakEvenPrice - m.liqPrice) * 50);
     leftLabel = fmtUsd0(m.liqPrice);
-    leftTitle = "Precio de liquidación reportado por BingX (margen cruzado)";
+    leftTitle = t("liqTitleKnown");
   } else {
     const SPAN = 15;
     const g = Math.max(-SPAN, Math.min(SPAN, m.combinedGainPct));
     curPos = (g + SPAN) / (SPAN * 2) * 100;
     leftLabel = "-15%";
-    leftTitle = "Sin precio de liquidación disponible todavía";
+    leftTitle = t("liqTitleUnknown");
   }
   const fillLeft = Math.min(zeroPos, curPos), fillWidth = Math.abs(curPos - zeroPos);
   const color = m.combinedGainPct >= 0 ? "var(--gr)" : "var(--rd)";
@@ -1026,24 +1305,24 @@ function renderRoundProgress(m) {
   const toLiqPct = hasLiq ? (m.price - m.liqPrice) / m.price * 100 : null;
 
   box.innerHTML = `
-    <div class="eyebrow mt" style="margin-bottom:2px">Balas usadas en la ronda ${m.currentRound}</div>
+    <div class="eyebrow mt" style="margin-bottom:2px">${t("bulletsUsedInRound", { r: m.currentRound })}</div>
     <div class="segs">${segs}</div>
     <div class="row" style="justify-content:space-between">
-      <span class="note" style="margin:0">${used} de ${MAX_BULLETS_PER_ROUND} · las restantes son el margen para seguir recargando si el precio baja</span>
+      <span class="note" style="margin:0">${t("bulletsUsedNote", { used, max: MAX_BULLETS_PER_ROUND })}</span>
     </div>
-    <div class="eyebrow" style="margin-top:18px">Liquidación · break-even · objetivo</div>
+    <div class="eyebrow" style="margin-top:18px">${t("progressEyebrow")}</div>
     <div class="track">
       <div class="track-bg"></div>
       <div class="track-fill" style="left:${fillLeft}%;width:${fillWidth}%;background:${color}"></div>
-      <div class="track-zero" style="left:${zeroPos}%" title="Break-even: ${fmtUsd0(m.breakEvenPrice)}"></div>
-      <div class="track-mark" style="left:${curPos}%" title="Precio actual: ${fmtUsd0(m.price)}"></div>
+      <div class="track-zero" style="left:${zeroPos}%" title="${t("breakEvenTitle", { price: fmtUsd0(m.breakEvenPrice) })}"></div>
+      <div class="track-mark" style="left:${curPos}%" title="${t("currentPriceTitle", { price: fmtUsd0(m.price) })}"></div>
       <div class="track-end" style="left:0" title="${leftTitle}">${leftLabel}</div>
-      <div class="track-goal" style="left:100%" title="Cierra la ronda: ${fmtUsd0(m.targetPrice)}">+15%</div>
+      <div class="track-goal" style="left:100%" title="${t("targetTitle", { price: fmtUsd0(m.targetPrice) })}">+15%</div>
     </div>
     <div class="row" style="justify-content:space-between">
-      <span class="note mono ${clsSign(m.combinedGainPct)}" style="margin:0">${fmtPct(m.combinedGainPct)} combinado</span>
-      ${hasLiq ? `<span class="note" style="margin:0">liquida a <b class="mono" style="color:var(--tx)">${fmtUsd0(m.liqPrice)}</b> <span class="dim">(−${fmtNum(toLiqPct, 1)}%)</span></span>` : ""}
-      <span class="note" style="margin:0">cierra en <b class="mono" style="color:var(--tx)">${fmtUsd0(m.targetPrice)}</b></span>
+      <span class="note mono ${clsSign(m.combinedGainPct)}" style="margin:0">${t("combinedLabel", { pct: fmtPct(m.combinedGainPct) })}</span>
+      ${hasLiq ? `<span class="note" style="margin:0">${t("liquidatesAtLabel")} <b class="mono" style="color:var(--tx)">${fmtUsd0(m.liqPrice)}</b> <span class="dim">(−${fmtNum(toLiqPct, 1)}%)</span></span>` : ""}
+      <span class="note" style="margin:0">${t("closesAtLabel")} <b class="mono" style="color:var(--tx)">${fmtUsd0(m.targetPrice)}</b></span>
     </div>`;
 }
 
@@ -1085,16 +1364,16 @@ function renderCompare(snaps) {
   block.style.display = "block";
 
   const gapDays = Math.max(1, Math.round((todayMs - new Date(ref.created_at).getTime()) / DAY_MS));
-  const gapLabel = gapDays === 1 ? "vs. ayer" : `vs. hace ${gapDays} días`;
+  const gapLabel = gapDays === 1 ? t("vsYesterday") : t("vsDaysAgo", { n: gapDays });
 
   const yday = ref;
   const delta = (a, b) => (a == null || b == null) ? null : a - b;
 
   const rows = [
-    { l: "Precio BTC", d: delta(today.price, yday.price), f: fmtUsd0 },
+    { l: t("chartRecentPriceTitle"), d: delta(today.price, yday.price), f: fmtUsd0 },
     { l: "Fear & Greed", d: delta(today.fear_greed_value, yday.fear_greed_value), f: (n) => (n >= 0 ? "+" : "") + n },
     { l: "Mayer Multiple", d: delta(today.mayer_multiple, yday.mayer_multiple), f: (n) => (n >= 0 ? "+" : "") + fmtNum(n, 3) },
-    { l: "Dominancia BTC", d: delta(today.btc_dominance_pct, yday.btc_dominance_pct), f: (n) => fmtPct(n) },
+    { l: t("chartDominanceTitle"), d: delta(today.btc_dominance_pct, yday.btc_dominance_pct), f: (n) => fmtPct(n) },
   ];
   $("compare-stats").innerHTML = rows.map(r => statHtml({
     l: r.l, v: r.d == null ? "—" : r.f(r.d), vCls: clsSign(r.d), s: gapLabel,
@@ -1105,7 +1384,7 @@ function renderCompare(snaps) {
 function renderDcaTable(m) {
   const dca = cache.dca;
   if (!dca.length) {
-    $("dca-table").innerHTML = `<div class="empty"><span class="big">◎</span>Sin compras DCA registradas todavía.</div>`;
+    $("dca-table").innerHTML = `<div class="empty"><span class="big">◎</span>${t("dcaEmptyState")}</div>`;
     return;
   }
   // Newest first: the recent purchases are the ones you actually check.
@@ -1128,17 +1407,26 @@ function renderDcaTable(m) {
   $("dca-table").innerHTML = `
     <table>
       <thead><tr>
-        <th>Fecha</th><th class="num">Monto</th><th class="num">Precio efectivo</th>
-        <th class="num">BTC</th><th class="num">Valor hoy</th><th class="num">P&L</th><th class="num">%</th>
+        <th>${t("dcaTableDate")}</th><th class="num">${t("dcaTableAmount")}</th><th class="num">${t("dcaTableEffectivePrice")}</th>
+        <th class="num">BTC</th><th class="num">${t("dcaTableValueToday")}</th><th class="num">P&L</th><th class="num">%</th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
 }
 
+// The CSS class stays the RAW db status (bullets.status: open/tracking/
+// closed_tp/closed_manual/closed_liquidated) so its colour never depends
+// on the language -- only the label text shown inside the badge does.
+const BULLET_STATUS_LABEL_KEY = {
+  open: "statusOpen", tracking: "statusTracking", closed_tp: "statusClosedTp",
+  closed_manual: "statusClosedManual", closed_liquidated: "statusClosedLiquidated",
+};
+const bulletStatusLabel = (status) => t(BULLET_STATUS_LABEL_KEY[status] || status);
+
 function renderBulletsTable(m) {
   const bullets = cache.bullets;
   if (!bullets.length) {
-    $("bullets-table").innerHTML = `<div class="empty"><span class="big">◎</span>Sin balas todavía.<br />La fase de balas arranca cuando se abra la primera.</div>`;
+    $("bullets-table").innerHTML = `<div class="empty"><span class="big">◎</span>${t("bulletsEmptyLine1")}<br />${t("bulletsEmptyLine2")}</div>`;
     return;
   }
   // Grouped by round, newest round first: a round is the unit that
@@ -1158,10 +1446,10 @@ function renderBulletsTable(m) {
     const outcome = (rows.find(b => (b.status || "").startsWith("closed")) || {}).status;
 
     const head = `<tr class="group"><td colspan="9">
-      <span class="rn">Ronda ${r}</span> · ${rows.length} bala(s) ·
+      <span class="rn">${t("roundLabel", { r })}</span> · ${t("bulletsCount", { n: rows.length })} ·
       ${isActive
-        ? `<span class="badge open">en curso</span>`
-        : `<span class="badge ${outcome || "closed_manual"}">${outcome === "closed_tp" ? "cerrada en objetivo" : "cerrada"}</span>
+        ? `<span class="badge open">${t("badgeOngoing")}</span>`
+        : `<span class="badge ${outcome || "closed_manual"}">${outcome === "closed_tp" ? t("badgeClosedTp") : t("badgeClosedOther")}</span>
            <span class="mono ${clsSign(realized)}"> ${fmtUsd(realized)}</span>`}
     </td></tr>`;
 
@@ -1175,11 +1463,11 @@ function renderBulletsTable(m) {
         pnlCell = `<td class="num ${clsSign(b.realized_pnl_usd)}">${fmtUsd(b.realized_pnl_usd)}</td>`;
       } else if (open && m.price != null) {
         const u = b.collateral_usd * ((m.price - b.entry_price) / b.entry_price * b.leverage);
-        pnlCell = `<td class="num ${clsSign(u)}" title="No realizado, con precio en vivo">${fmtUsd(u)}<span class="src"> nr</span></td>`;
+        pnlCell = `<td class="num ${clsSign(u)}" title="${t("unrealizedTooltip")}">${fmtUsd(u)}<span class="src"> ${t("unrealizedAbbr")}</span></td>`;
       }
       return `<tr>
         <td class="mono dim">#${b.bullet_number}</td>
-        <td><span class="badge ${b.status}">${b.status}</span></td>
+        <td><span class="badge ${b.status}">${bulletStatusLabel(b.status)}</span></td>
         <td class="num">${fmtUsd(b.collateral_usd)}</td>
         <td class="num">${fmtUsd0(b.entry_price)}</td>
         <td class="num dim">${fmtUsd0(b.target_price)}</td>
@@ -1195,9 +1483,9 @@ function renderBulletsTable(m) {
   $("bullets-table").innerHTML = `
     <table>
       <thead><tr>
-        <th>#</th><th>Estado</th><th class="num">Colateral</th><th class="num">Entrada</th>
-        <th class="num">Objetivo</th><th class="num">Liq. aprox</th><th class="num">Cierre</th>
-        <th class="num">P&L</th><th>Origen</th>
+        <th>#</th><th>${t("bulletsTableStatus")}</th><th class="num">${t("bulletsTableCollateral")}</th><th class="num">${t("bulletsTableEntry")}</th>
+        <th class="num">${t("bulletsTableTarget")}</th><th class="num">${t("bulletsTableLiq")}</th><th class="num">${t("bulletsTableClose")}</th>
+        <th class="num">P&L</th><th>${t("bulletsTableOrigin")}</th>
       </tr></thead>
       <tbody>${body}</tbody>
     </table>`;
@@ -1270,9 +1558,11 @@ function renderRecentCharts() {
   // bullet-check) for real intraday resolution. Falls back to the
   // once-a-day snapshots if ticks haven't started accumulating yet.
   const series = cache.ticks.length ? cache.ticks : cache.snaps;
-  $("chip-recent").textContent = cache.ticks.length ? "cada 15 min" : "diario";
-  makeChart("chart-price", series.map(t => fmtDateTime(t.created_at)),
-    series.map(t => t.price), "#F7931A");
+  $("chip-recent").textContent = cache.ticks.length ? t("every15min") : t("daily");
+  // Named `tick`, not `t` -- this file also has a global t() for i18n
+  // strings, and a same-named map parameter here would silently shadow it.
+  makeChart("chart-price", series.map(tick => fmtDateTime(tick.created_at)),
+    series.map(tick => tick.price), "#F7931A");
 
   const snaps = cache.snaps;
   const domLast = [...snaps].reverse().find(s => s.btc_dominance_pct != null);
@@ -1386,7 +1676,7 @@ function buildCycleCharts() {
 function renderReports(snaps) {
   const withText = snaps.filter(s => s.report_text);
   if (!withText.length) {
-    $("report-latest").innerHTML = `<div class="block"><div class="empty"><span class="big">✎</span>Sin informes generados todavía.</div></div>`;
+    $("report-latest").innerHTML = `<div class="block"><div class="empty"><span class="big">✎</span>${t("reportEmptyState")}</div></div>`;
     $("archive-block").style.display = "none";
     return;
   }
@@ -1396,7 +1686,7 @@ function renderReports(snaps) {
       <div class="mark sm">₿</div>
       <div class="report-body">
         <div class="report-meta">
-          <b>Informe del agente</b>
+          <b>${t("reportAgentLabel")}</b>
           <time>${fmtDateTime(latest.created_at)}</time>
         </div>
         <div class="report-text">${escapeHtml(latest.report_text)}</div>
@@ -1423,9 +1713,9 @@ function renderReports(snaps) {
           <div class="mark sm">₿</div>
           <div class="report-body">
             <div class="report-meta">
-              <b>Informe del agente</b>
+              <b>${t("reportAgentLabel")}</b>
               <time>${fmtDateTime(s.created_at)}</time>
-              <span class="chip">archivo</span>
+              <span class="chip">${t("reportArchivedChip")}</span>
             </div>
             <div class="report-text">${escapeHtml(s.report_text)}</div>
           </div>

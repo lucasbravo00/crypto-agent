@@ -284,6 +284,8 @@ Python projects on the same machine if installed globally.
 - **Ollama backend**: install https://ollama.com, run
   `ollama pull llama3.1`, and set `LLM_BACKEND=ollama`.
 - **Report language**: set `REPORT_LANGUAGE` (ISO code, e.g. `en`, `es`).
+  This is a separate switch from the dashboard's language — see "Web
+  dashboard" → "Dashboard language" below.
 - **Email delivery**: Outlook/Microsoft removed basic-auth SMTP sending
   (fully rejected since April 2026), so the report is sent *from* another
   SMTP provider (Gmail app password, or Brevo's free tier) *to* your
@@ -479,6 +481,43 @@ suggests trades. It shows:
 - The DCA and bullets tables (bullets show round/bullet number and
   whether each was opened manually or synced from a real BingX order),
   and the latest generated report text.
+
+### Dashboard language
+
+Every UI string (labels, table headers, empty states, tooltips, the
+bullet status badges) and every number/date format is driven by one
+constant near the top of `dashboard/index.html`:
+
+```js
+const DASHBOARD_LANGUAGE = "es";   // "es" | "en" | "pt"
+```
+
+This is a **separate switch from `REPORT_LANGUAGE`**, on purpose: that
+env var is read server-side by `src/agent.py` when it builds the report
+text, but the dashboard is a single, build-step-free static file with no
+server to inject an env var into the browser at request time (the whole
+point of the "no build step" design — see the top of this section). So
+its language has to be a plain JS constant, edited once per deployment,
+the same way `SUPABASE_URL`/`SUPABASE_ANON_KEY` already are a few lines
+below it. Change the value, redeploy (or just refresh if you're serving
+the file directly), done — no rebuild, no other file to touch.
+
+Number/date formatting follows the same switch via a locale map
+(`LOCALE_BY_LANG = { es: "es-AR", en: "en-US", pt: "pt-BR" }`), so
+`"es"` still shows `$1.234,56` / `18 jul 2026` while `"en"` shows
+`$1,234.56` / `Jul 18, 2026`.
+
+**Adding a fourth language**: copy one of the three blocks inside the
+`I18N` object (right after `DASHBOARD_LANGUAGE`) under a new key, translate
+every value, add a `LOCALE_BY_LANG` entry for it, then set
+`DASHBOARD_LANGUAGE` to that key. An unknown value falls back to English
+rather than breaking the page (`const LANG = I18N[DASHBOARD_LANGUAGE] ? DASHBOARD_LANGUAGE : "en";`).
+A few proper nouns/index names are deliberately left as plain literals in
+the markup instead of translation keys because they read the same in all
+three languages already shipped (`Fear & Greed`, `Mayer Multiple`, `BingX`,
+`VST`, `DCA`) — if your new language needs one of those to actually
+change, search the static HTML for the literal text and give it a
+`data-i18n` key following the pattern already used nearby.
 
 Security: the page uses the **anon** key (safe to expose — it's gated by
 Row Level Security). Run `supabase/security.sql` once to enable RLS +
