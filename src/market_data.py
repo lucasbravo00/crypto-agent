@@ -170,6 +170,53 @@ def get_cycle_metrics(symbol: str = "BTC/USDT") -> dict:
         "weekly_rsi_14": _rsi(w_closes, 14),
     }
 
+def get_trailing_high_drawdown(symbol: str = "BTC/USDT", lookback_days: int = 90) -> dict:
+    """How far the current price sits below its trailing N-day high --
+    decision-support data for a human's own de-risking judgment, NOT a
+    signal this codebase acts on. Used by bullets.get_daily_alert() to
+    surface round-depth context in the daily report (see README's
+    Roadmap item 4).
+
+    lookback_days defaults to 90 to match the ONLY lookback/threshold
+    combinations that survived BOTH real bull-cycle backtests in
+    backtest.py's `derisk_mode="drawdown"` sweep (30d/90d/180d, all at
+    -5%) -- see README's "Reactive de-risking" section. This is not a
+    coincidence: reusing that exact, already-validated framing means this
+    number means the same thing here as it does in the backtest, instead
+    of introducing a second, uncalibrated "recent high" definition.
+
+    The trailing high EXCLUDES today's own (still-incomplete) daily
+    candle, for the same reason backtest.py's trailing-high does: today's
+    high isn't fully known yet, and including it would let an intraday
+    spike inflate the number being measured against on the very day it's
+    measured.
+
+    Args:
+        symbol: Trading pair in BASE/QUOTE format, e.g. "BTC/USDT".
+        lookback_days: Size of the trailing window, in days.
+    """
+    candles = get_ohlcv(symbol, timeframe="1d", limit=lookback_days + 2)
+    complete_days = candles[:-1]  # drop today's still-forming candle
+    if len(complete_days) < 2:
+        return {
+            "symbol": symbol, "lookback_days": lookback_days,
+            "trailing_high": None, "current_price": None,
+            "drawdown_from_trailing_high_pct": None,
+        }
+
+    window = complete_days[-lookback_days:]
+    trailing_high = max(c[2] for c in window)  # candle[2] = high
+    current_price = get_price(symbol)["last_price"]
+
+    return {
+        "symbol": symbol,
+        "lookback_days": lookback_days,
+        "trailing_high": round(trailing_high, 2),
+        "current_price": current_price,
+        "drawdown_from_trailing_high_pct": round((current_price - trailing_high) / trailing_high * 100, 2),
+    }
+
+
 def get_current_date(**_ignored) -> dict:
     """Return today's real date. The model has no reliable notion of
     'today' on its own — if a report needs a date, it must come from

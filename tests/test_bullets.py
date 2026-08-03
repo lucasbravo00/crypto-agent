@@ -298,6 +298,75 @@ def test_check_bullets_rejects_bad_price():
         bullets.check_bullets(current_price=0)
 
 
+# --- check_bullets: real cross-margin liquidation price ---
+# Motivated by a real gap found 2026-07-31: with 3 open bullets, the
+# isolated-margin approx sat around $52k while BingX's real cross-margin
+# figure was $414.70, because free account balance was backing the
+# position. Before this, near_liquidation_any (which feeds a live alert
+# in main.py and the daily report via get_daily_alert()) was judged
+# against the isolated number alone -- guaranteed to fire falsely long
+# before the account was ever in real danger.
+
+def test_check_bullets_prefers_the_real_liquidation_price_when_given():
+    bullets.open_bullet(collateral_usd=500, entry_price=60000, leverage=5)
+    # Isolated approx would be 48000 (near_liquidation at price<=50400),
+    # but the real cross-margin price is far below -- not actually near.
+    result = bullets.check_bullets(current_price=50000, real_liquidation_price=400.0)
+    assert result["near_liquidation_any"] is False
+    assert result["liquidation_price"] == 400.0
+    b = result["bullets"][0]
+    assert b["liquidation_price_is_real"] is True
+    assert b["approx_liquidation_price"] == 48000.0   # isolated value still reported
+    assert math.isclose(b["pct_above_liquidation"], (50000 - 400.0) / 400.0 * 100)
+
+
+def test_check_bullets_real_liquidation_price_can_still_trigger_near_liquidation():
+    bullets.open_bullet(collateral_usd=500, entry_price=60000, leverage=5)
+    result = bullets.check_bullets(current_price=50000, real_liquidation_price=49000.0)
+    assert result["near_liquidation_any"] is True
+    assert result["liquidation_price"] == 49000.0
+    assert result["bullets"][0]["liquidation_price_is_real"] is True
+
+
+def test_check_bullets_falls_back_to_isolated_approx_without_a_real_price():
+    bullets.open_bullet(collateral_usd=500, entry_price=60000, leverage=5)
+    result = bullets.check_bullets(current_price=50000)   # no real_liquidation_price
+    assert result["liquidation_price"] is None
+    assert result["near_liquidation_any"] is True   # same as the pre-existing isolated behavior
+    assert result["bullets"][0]["liquidation_price_is_real"] is False
+
+
+@pytest.mark.parametrize("bad_value", [None, 0, -100.0])
+def test_check_bullets_ignores_a_non_positive_real_liquidation_price(bad_value):
+    bullets.open_bullet(collateral_usd=500, entry_price=60000, leverage=5)
+    result = bullets.check_bullets(current_price=50000, real_liquidation_price=bad_value)
+    assert result["liquidation_price"] is None
+    assert result["bullets"][0]["liquidation_price_is_real"] is False
+
+
+def test_check_bullets_real_liquidation_price_applies_to_every_bullet_alike():
+    """Cross margin protects/threatens the whole round together -- every
+    active bullet must share the same real liquidation reading, unlike
+    the isolated approximation which varies per bullet's own entry."""
+    _insert_bullet(500, 55000, leverage=5, target_position_gain_pct=15, opened_at=YESTERDAY)
+    bullets.open_bullet(collateral_usd=500, entry_price=65000, leverage=5, target_position_gain_pct=15)
+
+    result = bullets.check_bullets(current_price=60000, real_liquidation_price=1000.0)
+    assert {b["liquidation_price_used"] for b in result["bullets"]} == {1000.0}
+    assert all(b["liquidation_price_is_real"] for b in result["bullets"])
+    # The isolated approximations, by contrast, differ per bullet.
+    assert len({b["approx_liquidation_price"] for b in result["bullets"]}) == 2
+
+
+def test_check_bullets_includes_bullet_id_for_alert_messages():
+    """Regression guard: main.py's near-liquidation alert message reads
+    b['id'] -- a key check_bullets() didn't return before, which would
+    have raised KeyError the first time a real alert ever fired."""
+    bullets.open_bullet(collateral_usd=500, entry_price=60000, leverage=5)
+    result = bullets.check_bullets(current_price=50000)
+    assert isinstance(result["bullets"][0]["id"], int)
+
+
 # --- close_all_active_bullets ---
 
 def test_close_all_active_bullets_computes_realized_pnl_and_frees_day():
@@ -673,12 +742,25 @@ def test_sync_with_bingx_reads_exit_fee_from_sell_trade(monkeypatch):
 # sub-agent, added after that sub-agent (on the local Ollama backend)
 # fabricated a false alert from numbers it misread.
 
+def _quiet_drawdown(monkeypatch):
+    """Stub market_data.get_trailing_high_drawdown() with a "nothing to
+    see here" result. get_daily_alert() calls it live over the network
+    whenever any bullet is active, so every test that reaches that branch
+    must patch it -- otherwise the test suite would make a real ccxt call."""
+    from src import market_data
+    monkeypatch.setattr(market_data, "get_trailing_high_drawdown", lambda *a, **k: {
+        "trailing_high": None, "current_price": None,
+        "drawdown_from_trailing_high_pct": None, "lookback_days": 90,
+    })
+
+
 def test_get_daily_alert_none_when_nothing_active():
     assert bullets.get_daily_alert() is None
 
 
 def test_get_daily_alert_none_when_far_from_target(monkeypatch):
     from src import market_data
+    _quiet_drawdown(monkeypatch)
     # Reproduces the exact real-world bug: combined gain -3.71% vs a 15%
     # target is nowhere close -- must NOT alert.
     _insert_bullet(500, 60000, leverage=5, opened_at=YESTERDAY)
@@ -688,6 +770,7 @@ def test_get_daily_alert_none_when_far_from_target(monkeypatch):
 
 def test_get_daily_alert_fires_when_close_to_target(monkeypatch):
     from src import market_data
+    _quiet_drawdown(monkeypatch)
     # +12% combined at 5x needs about +2.4% price move; target is 15%,
     # gap is 3 points -- right at the alert threshold.
     _insert_bullet(500, 60000, leverage=5, opened_at=YESTERDAY)
@@ -699,6 +782,7 @@ def test_get_daily_alert_fires_when_close_to_target(monkeypatch):
 
 def test_get_daily_alert_fires_when_near_liquidation(monkeypatch):
     from src import market_data
+    _quiet_drawdown(monkeypatch)
     _insert_bullet(500, 60000, leverage=5, opened_at=YESTERDAY)
     # approx_liquidation_price at x5 is 48000; within LIQUIDATION_PROXIMITY_PCT (5%) of it.
     monkeypatch.setattr(market_data, "get_price", lambda symbol: {"last_price": 49500.0})
@@ -707,10 +791,94 @@ def test_get_daily_alert_fires_when_near_liquidation(monkeypatch):
     assert "liquidaci" in alert.lower()
 
 
+def test_get_daily_alert_uses_the_real_liquidation_price_when_bingx_is_enabled(monkeypatch):
+    """When BingX is configured, get_bullet_status() must fetch the real
+    cross-margin liquidation price and pass it through -- otherwise a
+    price that's actually nowhere near danger (isolated approx ~48000,
+    real ~400) would still fire the alert."""
+    from src import market_data, bingx_client
+    _quiet_drawdown(monkeypatch)
+    monkeypatch.setenv("BINGX_API_KEY", "k")
+    monkeypatch.setenv("BINGX_API_SECRET", "s")
+    monkeypatch.setattr(bingx_client, "get_liquidation_price", lambda **k: 400.0)
+    _insert_bullet(500, 60000, leverage=5, opened_at=YESTERDAY)
+    # Isolated approx (48000) would flag this as near-liquidation; the
+    # real price (400) means it's nowhere close.
+    monkeypatch.setattr(market_data, "get_price", lambda symbol: {"last_price": 49500.0})
+    assert bullets.get_daily_alert() is None
+
+
+def test_get_daily_alert_falls_back_when_the_real_liquidation_lookup_fails(monkeypatch):
+    from src import market_data, bingx_client
+    _quiet_drawdown(monkeypatch)
+    monkeypatch.setenv("BINGX_API_KEY", "k")
+    monkeypatch.setenv("BINGX_API_SECRET", "s")
+
+    def boom(**kwargs):
+        raise RuntimeError("exchange unreachable")
+
+    monkeypatch.setattr(bingx_client, "get_liquidation_price", boom)
+    _insert_bullet(500, 60000, leverage=5, opened_at=YESTERDAY)
+    monkeypatch.setattr(market_data, "get_price", lambda symbol: {"last_price": 49500.0})
+    alert = bullets.get_daily_alert()
+    assert alert is not None
+    assert "aislado" in alert
+
+
+# --- get_daily_alert(): round-depth/drawdown context (README Roadmap item 4) ---
+
+def test_get_daily_alert_adds_context_line_on_a_deep_correction(monkeypatch):
+    from src import market_data
+    _insert_bullet(500, 60000, leverage=5, opened_at=YESTERDAY)
+    # Far from target and from liquidation -- would otherwise be a quiet
+    # day -- but a -8% drawdown crosses the -5% context threshold.
+    monkeypatch.setattr(market_data, "get_price", lambda symbol: {"last_price": 59900.0})
+    monkeypatch.setattr(market_data, "get_trailing_high_drawdown", lambda *a, **k: {
+        "trailing_high": 70000.0, "current_price": 64400.0,
+        "drawdown_from_trailing_high_pct": -8.0, "lookback_days": 90,
+    })
+    alert = bullets.get_daily_alert()
+    assert alert is not None
+    assert "Contexto" in alert
+    assert "90" in alert           # lookback days
+    assert "1/30" in alert or "1/" in alert   # round depth (1 active bullet)
+    assert "recomendación" in alert.lower() or "recomendaci" in alert.lower()
+
+
+def test_get_daily_alert_stays_quiet_on_a_shallow_pullback(monkeypatch):
+    from src import market_data
+    _insert_bullet(500, 60000, leverage=5, opened_at=YESTERDAY)
+    monkeypatch.setattr(market_data, "get_price", lambda symbol: {"last_price": 59900.0})
+    # -2% is below the -5% bar -- must stay quiet, same as a flat market.
+    monkeypatch.setattr(market_data, "get_trailing_high_drawdown", lambda *a, **k: {
+        "trailing_high": 61200.0, "current_price": 60000.0,
+        "drawdown_from_trailing_high_pct": -2.0, "lookback_days": 90,
+    })
+    assert bullets.get_daily_alert() is None
+
+
+def test_get_daily_alert_survives_a_failed_drawdown_lookup(monkeypatch):
+    """Best-effort: a broken market_data call must not take down the rest
+    of the alert (or the report)."""
+    from src import market_data
+    _insert_bullet(500, 60000, leverage=5, opened_at=YESTERDAY)
+    monkeypatch.setattr(market_data, "get_price", lambda symbol: {"last_price": 61440.0})
+
+    def boom(*a, **k):
+        raise RuntimeError("exchange unreachable")
+
+    monkeypatch.setattr(market_data, "get_trailing_high_drawdown", boom)
+    alert = bullets.get_daily_alert()
+    assert alert is not None            # the target-proximity line still fires
+    assert "objetivo" in alert
+    assert "Contexto" not in alert
+
+
 def test_get_daily_alert_can_report_both_conditions_together(monkeypatch):
     # Isolate get_daily_alert()'s own condition/concatenation logic from
     # the underlying P&L math (already covered by the tests above) by
     # mocking get_bullet_status directly with both conditions true.
+    _quiet_drawdown(monkeypatch)
     monkeypatch.setattr(bullets, "get_bullet_status", lambda symbol="BTC/USDT": {
         "live_status": {
             "combined_position_gain_pct": 13.0,

@@ -298,31 +298,48 @@ def get_active_bullets(**_ignored) -> list[dict]:
     return _find_active_bullets(state_module.get_bullets())
 
 
-def check_bullets(current_price: float) -> dict:
+def check_bullets(current_price: float, real_liquidation_price: float | None = None) -> dict:
     """Compute the live, COMBINED P&L across every active bullet at
     ``current_price``.
 
     Pure with respect to the network: the caller passes the current
-    price (obtained separately via market_data.get_price()), so this
-    function is testable in isolation. Its only side effect is the
-    documented open -> tracking transition on the first check of each
-    bullet.
+    price and (optionally) the real liquidation price -- both obtained
+    separately (market_data.get_price(), bingx_client.get_liquidation_price())
+    -- so this function stays testable in isolation. Its only side effect
+    is the documented open -> tracking transition on the first check of
+    each bullet.
 
     Args:
         current_price: Latest market price of the asset.
+        real_liquidation_price: BingX's OWN cross-margin liquidation price
+            for the round (see bingx_client.get_liquidation_price()), if
+            the caller has one. THIS is what "near_liquidation" is judged
+            against when given -- under cross margin, liquidation is a
+            function of the WHOLE round vs. the account's total equity,
+            not any single bullet's own collateral, so a per-bullet
+            isolated-margin approximation can be wildly optimistic about
+            danger (measured 2026-07-31: isolated approx ~$52k vs BingX's
+            real ~$415, because free account balance was backing the
+            position -- exactly what the 30-bullet budget is for). Pass
+            None (the default) to fall back to each bullet's own
+            approx_liquidation_price, e.g. when BingX isn't configured.
 
     Returns:
         A dict with:
         - "bullets": per-bullet detail (own price move %, position gain
-          %, unrealized P&L, distance to its own liquidation price).
+          %, unrealized P&L, distance to liquidation).
+        - "liquidation_price": the real_liquidation_price echoed back if
+          one was given and valid, else None (isolated fallback was used).
         - combined totals across all active bullets: collateral,
           unrealized P&L, and position gain % (= combined P&L / combined
           collateral).
         - "target_reached": whether the COMBINED gain hit the round's
           target (the target_position_gain_pct recorded on the first
           active bullet -- they should all share the same value).
-        - "near_liquidation_any": True if ANY individual bullet is close
-          to ITS OWN liquidation price (liquidation risk stays per bullet).
+        - "near_liquidation_any": True if price is close to the real
+          cross-margin liquidation (when known), or -- only as a
+          fallback -- if any bullet is close to its own isolated-margin
+          approximation.
 
     Raises:
         RuntimeError: If there are no active bullets.
@@ -334,6 +351,8 @@ def check_bullets(current_price: float) -> dict:
     active = _find_active_bullets(state_module.get_bullets())
     if not active:
         raise RuntimeError("No active bullets to check.")
+
+    has_real_liq = bool(real_liquidation_price and real_liquidation_price > 0)
 
     per_bullet = []
     total_collateral = 0.0
@@ -347,7 +366,11 @@ def check_bullets(current_price: float) -> dict:
 
         entry_price = bullet["entry_price"]
         leverage = bullet["leverage"]
-        liq_price = bullet["approx_liquidation_price"]
+        isolated_liq_price = bullet["approx_liquidation_price"]
+        # The real cross-margin figure applies to the whole round alike,
+        # so every bullet shares it; only the isolated fallback varies
+        # per bullet.
+        liq_price = real_liquidation_price if has_real_liq else isolated_liq_price
 
         price_move_pct = (current_price - entry_price) / entry_price * 100
         position_gain_pct = price_move_pct * leverage
@@ -366,12 +389,15 @@ def check_bullets(current_price: float) -> dict:
         total_unrealized_pnl += unrealized_pnl_usd
 
         per_bullet.append({
+            "id": bullet["id"],
             "round_number": bullet.get("round_number"),
             "bullet_number": bullet["bullet_number"],
             "status": bullet["status"],
             "entry_price": entry_price,
             "leverage": leverage,
-            "approx_liquidation_price": liq_price,
+            "approx_liquidation_price": isolated_liq_price,
+            "liquidation_price_used": round(liq_price, 2),
+            "liquidation_price_is_real": has_real_liq,
             "price_move_pct": round(price_move_pct, 2),
             "position_gain_pct": round(position_gain_pct, 2),
             "unrealized_pnl_usd": round(unrealized_pnl_usd, 2),
@@ -386,6 +412,7 @@ def check_bullets(current_price: float) -> dict:
         "round_number": active[0].get("round_number"),
         "current_price": current_price,
         "bullets": per_bullet,
+        "liquidation_price": round(real_liquidation_price, 2) if has_real_liq else None,
         "combined_collateral_usd": round(total_collateral, 2),
         "combined_unrealized_pnl_usd": round(total_unrealized_pnl, 2),
         "combined_position_gain_pct": round(combined_position_gain_pct, 2),
@@ -548,16 +575,41 @@ def get_bullet_status(symbol: str = "BTC/USDT") -> dict:
     if summary["active_bullets_count"] == 0:
         return {**summary, "live_status": None}
 
-    from . import market_data  # local import: keeps the rest of this
-    # module network-free and avoids importing ccxt/requests unless a
-    # bullet is actually active.
+    from . import market_data, bingx_client  # local import: keeps the
+    # rest of this module network-free and avoids importing ccxt/requests
+    # unless a bullet is actually active.
     current_price = market_data.get_price(symbol)["last_price"]
-    return {**summary, "live_status": check_bullets(current_price)}
+
+    # Best-effort: the real cross-margin liquidation price makes
+    # near_liquidation_any meaningful instead of alarmist (see
+    # check_bullets' docstring). A failed lookup falls back to the
+    # isolated-margin approximation rather than losing the whole report.
+    real_liq = None
+    if bingx_client.is_enabled():
+        try:
+            real_liq = bingx_client.get_liquidation_price()
+        except Exception:
+            real_liq = None
+
+    return {**summary, "live_status": check_bullets(current_price, real_liquidation_price=real_liq)}
 
 
 # How close (in percentage points of combined position gain) to the
 # round's target before get_daily_alert() flags it in the report.
 DAILY_ALERT_TARGET_GAP_PCT = 3.0
+
+# Round-depth/drawdown CONTEXT line (README Roadmap item 4): decision
+# support for the user's OWN manual de-risking judgment -- this bot never
+# reduces exposure or stops opening bullets on its own, it only surfaces
+# the number a human doing that by hand would want to see. Reuses the
+# exact lookback/threshold (90 days, -5%) that were the ONLY combinations
+# to survive BOTH real bull-cycle backtests in backtest.py's
+# derisk_mode="drawdown" sweep -- see README's "Reactive de-risking"
+# section. Deliberately the SAME number as the backtest, not a fresh
+# guess, so "the round is X% below its trailing high" means the same
+# thing here as it does there.
+ROUND_CONTEXT_LOOKBACK_DAYS = 90
+ROUND_CONTEXT_DRAWDOWN_PCT = 5.0
 
 
 def get_daily_alert(symbol: str = "BTC/USDT") -> str | None:
@@ -569,7 +621,8 @@ def get_daily_alert(symbol: str = "BTC/USDT") -> str | None:
     already shows full DCA/bullet detail, so a quiet day says nothing at
     all -- this only speaks up for something worth catching before the
     user next opens the dashboard: the round plausibly about to close,
-    or a bullet near its own liquidation price.
+    or price near the round's real (or, absent that, isolated-margin
+    approximated) liquidation.
 
     Returns:
         None on a quiet day. A short, human-readable sentence (or two,
@@ -591,7 +644,33 @@ def get_daily_alert(symbol: str = "BTC/USDT") -> str | None:
     if live["near_liquidation_any"]:
         near = [b for b in live["bullets"] if b["near_liquidation"]]
         nums = ", ".join(f"#{b['bullet_number']}" for b in near)
-        parts.append(f"⚠️ Bala(s) {nums} cerca de su precio de liquidación.")
+        if live.get("liquidation_price") is not None:
+            parts.append(
+                f"⚠️ Precio cerca de la liquidación real de la ronda "
+                f"({live['liquidation_price']} USD)."
+            )
+        else:
+            parts.append(f"⚠️ Bala(s) {nums} cerca de su precio de liquidación aproximado (aislado).")
+
+    # Round-depth/drawdown context: informational only, and only mentioned
+    # when the correction is deep enough to matter (same -5% bar the
+    # backtest itself used), so a quiet, shallow pullback still says
+    # nothing -- consistent with this function's whole "quiet day says
+    # nothing" design.
+    try:
+        from . import market_data
+        dd = market_data.get_trailing_high_drawdown(symbol, lookback_days=ROUND_CONTEXT_LOOKBACK_DAYS)
+        drawdown_pct = dd.get("drawdown_from_trailing_high_pct")
+        if drawdown_pct is not None and drawdown_pct <= -ROUND_CONTEXT_DRAWDOWN_PCT:
+            used = status.get("active_bullets_count", len(live["bullets"]))
+            parts.append(
+                f"📊 Contexto: precio {drawdown_pct}% por debajo de su máximo de "
+                f"{ROUND_CONTEXT_LOOKBACK_DAYS} días ({dd['trailing_high']} USD). "
+                f"Ronda usando {used}/{MAX_BULLETS_PER_ROUND} balas -- dato para tu "
+                "propia decisión de exposición, no una recomendación."
+            )
+    except Exception:
+        pass  # best-effort: a failed lookup must not cost the rest of the alert
 
     return " ".join(parts) if parts else None
 

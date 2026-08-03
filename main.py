@@ -284,6 +284,15 @@ def cmd_bullet_check():
             print(f"⚠️ Could not record price tick: {exc}")
 
     from src import bingx_client
+    # BingX's own cross-margin liquidation price for the round, fetched
+    # once and reused below both for the account tick and for
+    # check_bullets()'s near_liquidation check -- see
+    # bingx_client.get_liquidation_price()'s docstring for why a
+    # per-bullet isolated approximation is not a safe substitute (it can
+    # sit tens of thousands of dollars away from the real number).
+    # Stays None if BingX isn't configured or the lookup fails, and
+    # check_bullets() falls back to the isolated approximation.
+    real_liq_price = None
     if bingx_client.is_enabled():
         # auto_trade() no-ops internally unless BINGX_AUTO_TRADE_ENABLED=true
         # -- always safe to call. Runs BEFORE sync so an order placed just
@@ -349,6 +358,14 @@ def cmd_bullet_check():
         except Exception as exc:
             print(f"⚠️ Could not sync DCA with BingX: {exc}")
 
+        # Best-effort, fetched once and shared: a failure here must not
+        # cost the balance tick below, nor fall through silently to a
+        # false "near liquidation" alert further down.
+        try:
+            real_liq_price = bingx_client.get_liquidation_price()
+        except Exception as exc:
+            print(f"⚠️ Could not read liquidation price: {exc}")
+
         if db.is_enabled():
             try:
                 # DEMO (VST) balance -- the capital being used to test the
@@ -357,23 +374,16 @@ def cmd_bullet_check():
                 # to Nexo for yield between DCA buys), so it isn't a
                 # meaningful "money in account" figure.
                 balance = bingx_client.get_balance()
-                # BingX's own cross-margin liquidation price, recorded on
-                # the same 15-min cadence so the dashboard can anchor the
-                # round-progress bar to the real liquidation. Best-effort:
-                # a failure here must not cost the balance tick.
-                try:
-                    liq_price = bingx_client.get_liquidation_price()
-                except Exception as exc:
-                    print(f"⚠️ Could not read liquidation price: {exc}")
-                    liq_price = None
-                state.record_account_tick(balance["total"], liquidation_price=liq_price)
+                # Recorded on the same 15-min cadence so the dashboard can
+                # anchor the round-progress bar to the real liquidation.
+                state.record_account_tick(balance["total"], liquidation_price=real_liq_price)
             except Exception as exc:
                 print(f"⚠️ Could not record account tick: {exc}")
 
     if not bullets.get_active_bullets():
         print("No active bullets. Use 'bullet-open' to record one.")
         return
-    result = bullets.check_bullets(price)
+    result = bullets.check_bullets(price, real_liquidation_price=real_liq_price)
     print(json.dumps(result, indent=2, ensure_ascii=False))
     if result["target_reached"] or result["near_liquidation_any"]:
         alerts = []
@@ -385,10 +395,18 @@ def cmd_bullet_check():
             )
         if result["near_liquidation_any"]:
             near = [b for b in result["bullets"] if b["near_liquidation"]]
-            alerts.append(
-                "⚠️ Near liquidation: bullet(s) " +
-                ", ".join(f"#{b['id']} ({b['pct_above_liquidation']}% above approx. liquidation)" for b in near)
-            )
+            if result["liquidation_price"] is not None:
+                alerts.append(
+                    f"⚠️ Near liquidation: price is close to BingX's real cross-margin "
+                    f"liquidation ({result['liquidation_price']} USD) for bullet(s) " +
+                    ", ".join(f"#{b['bullet_number']}" for b in near) + "."
+                )
+            else:
+                alerts.append(
+                    "⚠️ Near liquidation (isolated-margin APPROXIMATION -- no real "
+                    "cross-margin figure this cycle): bullet(s) " +
+                    ", ".join(f"#{b['bullet_number']} ({b['pct_above_liquidation']}% above approx. liquidation)" for b in near)
+                )
         alerts.append(
             f"Combined unrealized P&L: {result['combined_unrealized_pnl_usd']} USD "
             f"({result['combined_position_gain_pct']}%). Decide and execute manually on BingX."

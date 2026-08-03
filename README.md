@@ -41,7 +41,11 @@ src/
   market_data.py          -> read-only tools: price, daily indicators,
                              cycle metrics (200w SMA, Mayer Multiple, drawdown,
                              weekly RSI), fear & greed, BTC dominance
-                             (BingX/CoinGecko), all with retry logic
+                             (BingX/CoinGecko), all with retry logic.
+                             get_trailing_high_drawdown() computes % below a
+                             trailing N-day high (90d/-5% by default, matching
+                             the backtest's own validated de-risking bar) --
+                             feeds bullets.get_daily_alert()'s context line
   strategy_tools.py       -> pure math of a leveraged bullet position (no network)
   state.py                -> stateful tool: DCA purchases + bullets + account/price
                              ticks, dual backend (see below)
@@ -163,10 +167,20 @@ supabase/migration_*.sql   -> incremental migrations, run in order if your proje
   end to it. Note ccxt's unified `liquidationPrice` field returns None
   for BingX cross-margin positions; the value only exists in the raw
   `info` payload (see `bingx_client.get_liquidation_price`).
-  Still open: `strategy_tools.simulate_bullet_math()`'s
-  `approx_liquidation_price` — the per-bullet column in the bullets
-  table — remains isolated-margin math and is illustrative, not literal.
-  Nothing depends on it for a decision.
+  `strategy_tools.simulate_bullet_math()`'s `approx_liquidation_price`
+  (the per-bullet column in the bullets table) remains isolated-margin
+  math and stays illustrative, not literal — but as of 2026-08-01 it no
+  longer decides anything: `check_bullets()`'s `near_liquidation_any`
+  (the flag behind the live bullet-check alert AND `get_daily_alert()`)
+  used to be judged against that same isolated per-bullet approximation
+  alone, which meant it was guaranteed to fire falsely long before the
+  account was ever in real cross-margin danger. `check_bullets()` now
+  takes an optional `real_liquidation_price` (BingX's own figure, fetched
+  once per cycle in `bullet-check` and reused for both the account tick
+  and this check); when present, it replaces the isolated approximation
+  for every active bullet alike, since cross-margin liquidation applies
+  to the whole round, not any one bullet. Falls back to the old isolated
+  per-bullet math only when BingX isn't configured or the lookup fails.
 - **Sync from trade history, not positions**: BingX MERGES same-symbol,
   same-side positions into one row with an averaged entry price (opening
   a position and later adding to it keeps the same `positionId`).
@@ -826,21 +840,30 @@ something that quietly grows out of the backtester.
    real, automatic `bullet-check` cycle has only been unit-tested and
    manually invoked once (an emergency cleanup) — worth watching for
    naturally or testing deliberately.
-3. **Cross-margin liquidation display** (partly done 2026-07-31): the
-   dashboard's round-progress bar now uses BingX's OWN liquidation price,
-   stored per tick in `account_ticks.liquidation_price`, so the number
-   that matters is real. Still outstanding:
-   `strategy_tools.simulate_bullet_math()` reports a per-bullet
-   `approx_liquidation_price` using isolated, USDT-margined math, and the
-   bullets table still shows that column. Under cross margin with BTC
-   collateral the real liquidation point is a function of the whole round
-   vs. account equity (the backtest models this correctly; that one
-   per-bullet column does not). Nothing decides anything from it.
-4. **Surface backtest context in the daily report**: the human makes the
-   de-risking calls, so the report is where that judgment gets informed —
-   e.g. showing how deep the current round is into its 30-bullet budget
-   and how far price sits below its recent highs. Data for a decision,
-   never the decision itself.
+3. **Cross-margin liquidation display** (done 2026-07-31, alerting fixed
+   2026-08-01): the dashboard's round-progress bar uses BingX's OWN
+   liquidation price, stored per tick in `account_ticks.liquidation_price`.
+   `check_bullets()`'s `near_liquidation_any` — the flag behind the live
+   bullet-check alert and `get_daily_alert()` — used to be judged against
+   each bullet's isolated-margin `approx_liquidation_price` alone, which
+   would have fired a false alarm long before the account was ever in
+   real danger; it now takes the real price as an optional argument and
+   uses it for every active bullet when available (see "Design
+   decisions"). `strategy_tools.simulate_bullet_math()`'s per-bullet
+   `approx_liquidation_price` column still shows isolated math and is
+   labelled as an approximation — nothing left depends on it for a
+   decision, it's informational only.
+4. **Surface backtest context in the daily report** (done 2026-08-01):
+   `market_data.get_trailing_high_drawdown()` reuses the EXACT
+   lookback/threshold (90 days, -5%) that survived both real bull-cycle
+   backtests in `derisk_mode="drawdown"` (see "Reactive de-risking"), so
+   the number means the same thing in the report as it does in the
+   backtest. `get_daily_alert()` adds a `📊 Contexto:` line — how far
+   below its trailing high price sits, and how many of the round's
+   30-bullet budget are used — only when the correction crosses that
+   bar; a shallow pullback still stays quiet, matching this function's
+   existing "quiet day says nothing" design. Purely informational: the
+   human decides what (if anything) to do with it.
 5. **Telegram bidirectional bot**: respond to commands from the chat
    (e.g. `/bullet-open`) talking directly to Supabase, same pattern as
    the dashboard.
