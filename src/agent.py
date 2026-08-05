@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 
 import anthropic
 
-from . import bullets, market_data, memory
+from . import bullets, creators, market_data, memory
 
 MODEL = "claude-sonnet-4-6"
 MAX_ITERATIONS = 10  # hard anti-infinite-loop cap, per sub-agent
@@ -220,6 +220,26 @@ def _log(event: dict) -> None:
         f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
 
+def summarize(system_prompt: str, user_text: str, max_tokens: int = 300) -> str:
+    """One-shot completion with NO tools and no agent loop.
+
+    Deliberately separate from _run_subagent(): this is not an agent
+    deciding what to look up, it's a pure text-in/text-out call over text
+    the caller already has (see creators.py, which uses it to condense a
+    video transcript). Giving it the tool loop would add failure modes
+    and cost for nothing.
+    """
+    client = anthropic.Anthropic()  # uses ANTHROPIC_API_KEY from the environment
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=max_tokens,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_text}],
+    )
+    parts = [block.text for block in response.content if block.type == "text"]
+    return "\n".join(parts).strip()
+
+
 def _run_subagent(
     role: str,
     tools: list[dict],
@@ -320,7 +340,8 @@ def run_daily_report(symbol: str = "BTC/USDT") -> str:
         _market_analyst_prompt(),
         f"Build the market-context section of the daily report for {symbol}.",
     )
-    alert = bullets.get_daily_alert()
-    if not alert:
-        return market_text
-    return f"{market_text}\n\n{alert}"
+    # Both extras are optional and independently best-effort: each
+    # returns None rather than raising, so a quiet day (or a broken
+    # YouTube feed) simply leaves that section out of the report.
+    sections = [market_text, bullets.get_daily_alert(), creators.get_creator_digest()]
+    return "\n\n".join(s for s in sections if s)

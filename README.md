@@ -86,6 +86,12 @@ src/
   telegram_notifier.py     -> Telegram delivery (optional). With a chart, sendPhoto
                              carrying the text as caption; falls back to photo +
                              separate message past Telegram's 1024-char caption limit
+  creators.py              -> watches YouTube channels you follow via their public
+                             Atom feeds (no API key), pulls captions for NEW videos,
+                             and adds a short synthesis to the report -- but ONLY
+                             for videos a dedicated classifier confirms are about
+                             crypto (see "YouTube creator digest"). Best-effort:
+                             returns None instead of raising
   report_chart.py          -> renders the market context as a PNG with matplotlib
                              (headless "Agg" backend). Best-effort by contract:
                              returns None instead of raising, so a broken chart can
@@ -103,6 +109,9 @@ tests/
   test_memory.py            -> unit tests for the memory/trend comparisons
   test_backtest.py          -> unit tests for the backtest, incl. hand-derived inverse
                              contract math (synthetic candles, no network)
+  test_creators.py          -> unit tests for the YouTube digest: feed parsing, the
+                             3-stage crypto filter, and the fail-closed classifier
+                             (no network, no LLM, no Supabase)
   test_report_chart.py      -> unit tests for the chart's series math and for how each
                              channel carries the image (no SMTP, no Telegram, no network)
 state/                     -> local JSON state, used only when Supabase isn't configured
@@ -411,6 +420,125 @@ back to `.plist` and `launchctl bootstrap` it.
 catches up missed runs on wake). The daily report no longer depends on
 that — but with `LLM_BACKEND=ollama` a *local* `python main.py report`
 still needs the Ollama app running.
+
+## YouTube creator digest
+
+Optional. When a channel you follow publishes a **new video that is
+genuinely about crypto**, the daily report gains one or two sentences
+synthesizing its central argument, attributed to the creator. Off by
+default:
+
+```bash
+YOUTUBE_DIGEST_ENABLED=true
+YOUTUBE_CHANNELS=@CoinBureau,@AltcoinDaily   # @handles or raw UC... ids
+```
+
+Needs Supabase (it remembers which videos it already covered) — run
+`supabase/migration_creator_videos.sql` once.
+
+**No YouTube API key.** Uploads are detected through each channel's
+public Atom feed (`youtube.com/feeds/videos.xml?channel_id=…`), the same
+"free public endpoint, no auth" approach already used for Binance klines
+and alternative.me. Captions come from `youtube-transcript-api`.
+
+**The transcript never reaches the report or the database.** It runs to
+tens of thousands of characters, it belongs to the creator, and the point
+is a synthesis in the agent's own words — only the short summary is
+stored, in `creator_videos.summary`.
+
+### How "is this actually about crypto?" is decided
+
+Three stages, cheapest first, and the ordering is the whole design:
+
+1. **Keyword prefilter (code, free).** Needs ≥2 distinct crypto keywords
+   across title+transcript. Deliberately generous: its only job is to
+   skip obviously-unrelated uploads before spending tokens, *not* to make
+   the call.
+2. **A dedicated binary classifier (LLM).** One question, one word back.
+3. **A code-level backstop.** The produced summary must itself mention
+   crypto, or it's discarded.
+
+Stage 2 started out folded into the summarizer prompt (*"if it's not
+crypto, reply NOT_CRYPTO, otherwise summarize"*). **Tested against the
+local Ollama model with a laptop review that name-drops bitcoin and
+ethereum, it ignored the rule and cheerfully summarized the laptop** —
+the exact class of failure that got the LLM "portfolio manager"
+sub-agent deleted from this project. A combined prompt offers an easy
+path: summarizing is the more natural task, so the judgment quietly gets
+skipped. Asked the yes/no question **alone**, the same model got all
+three probe cases right, including that laptop review (NO) and a
+genuinely-crypto video whose title contains no crypto word (YES).
+
+The classifier **fails closed**: an ambiguous answer, an empty one or a
+crashed call all count as "not crypto". A missed mention is cheap; a
+laptop review in a crypto report is not.
+
+Stage 3 exists because stage 2 is still a prompt. It uses a **one**-keyword
+bar rather than stage 1's two — right for a whole transcript, wrong for a
+one-sentence summary, and getting that wrong rejected the first real
+correct summary this code produced (it mentioned only Bitcoin). There's a
+regression test pinning it.
+
+### Two bugs the first real test caught
+
+Both were silent — the feature "worked", it just quietly produced nothing
+or the wrong thing. Worth knowing about if you extend this:
+
+- **Captions were requested in English only.** The library's `fetch()`
+  defaults to `languages=('en',)` and raises `NoTranscriptFound` for
+  anything else. Every one of the three Spanish-speaking channels tested
+  came back empty even though all three had perfectly good auto-generated
+  `es` captions. `fetch_transcript()` now asks for `REPORT_LANGUAGE`
+  first and then accepts **any** track the video has. (The summary is
+  still written in `REPORT_LANGUAGE` regardless of the source language.)
+- **The keyword prefilter was too strict for Shorts.** The two-distinct-
+  keyword bar is right for a full-length transcript, where one passing
+  mention means nothing — but a 600-character Short has no room for a
+  passing mention: whatever it names is what it is about. Measured on two
+  real Shorts published the same day, a CriptoNorber one about Saylor and
+  BlackRock hoarding bitcoin scored exactly **one** keyword and was
+  wrongly discarded, while a genuinely off-topic one about an Argentine
+  mining-investment regime scored **zero**. The bar now scales with
+  length. Being generous here is safe by construction: stage 1 only
+  decides whether to spend tokens; the fail-closed classifier is what
+  decides what reaches the report.
+
+### It filters per VIDEO, not per channel
+
+Worth setting expectations on, because it surprised the first real test.
+A crypto channel regularly posts things that aren't crypto, and those are
+correctly left out. Alex Ruiz's *"El Trading Con Velas Japonesas Nunca Ha
+Sido Tan Fácil"* — 31,712 characters, **zero** crypto keywords in the
+first 6,000 the classifier reads, opening straight into candlestick
+theory — is a general technical-analysis tutorial and gets rejected, even
+though the channel itself is crypto-focused.
+
+Note the corollary: the classifier only sees the first
+`TRANSCRIPT_CHAR_LIMIT` (6,000) characters. A video that spends fifteen
+minutes on something else before turning to crypto will read as
+non-crypto. That's a deliberate cost bound, not an oversight.
+
+`MAX_VIDEOS_PER_RUN` (3) caps how many new videos one run will process,
+newest first. With several channels posting daily, the oldest candidates
+inside the 2-day window can fall off the end — by design, since the
+report is meant to stay short.
+
+### ⚠️ Known risk: transcripts from a datacenter IP
+
+**Untested in production as of 2026-08-04.** YouTube throttles and
+sometimes blocks caption requests from datacenter IPs, and the daily
+report runs on GitHub Actions. The library reports this as
+`IpBlocked` / `RequestBlocked` / `PoTokenRequired`; `creators.py` treats
+it like any other failure — the section is skipped and the report goes
+out normally — so the failure mode is "this feature quietly does
+nothing", not a broken report.
+
+Verified working from a **residential** IP (a real Coin Bureau video,
+13,338 characters of transcript). To find out whether your Actions runner
+is blocked, enable the feature and check that run's log for
+`⚠️ No transcript for video …: IpBlocked`. If it is blocked, the fallback
+is to run `python main.py report` from the Mac (where it's known to work)
+instead of from Actions.
 
 ## Report chart
 
@@ -872,8 +1000,8 @@ Done: BingX demo auto-trading, DCA auto-sync from real BingX trades,
 round-based bullet accounting, reconciliation hardening, auto-trade
 notifications, real exchange fees in P&L, the web dashboard (including
 market-cycle charts), report memory (1/7/30-day trend context),
-Predictive Ranges, the coin-margined backtester, and live RSI-timed
-bullet entries.
+Predictive Ranges, the coin-margined backtester, live RSI-timed bullet
+entries, and the YouTube creator digest.
 
 ## Disclaimer
 

@@ -67,6 +67,11 @@ jobs:
           REPORT_LANGUAGE: ${{ vars.REPORT_LANGUAGE || 'en' }}
           NOTIFY_CHANNEL: ${{ vars.NOTIFY_CHANNEL || 'console' }}
           SYMBOL: ${{ vars.SYMBOL || 'BTC/USDT' }}
+          # YouTube creator digest (off unless the repo variable says so).
+          # NOTE: transcript fetching from a datacenter IP may be blocked
+          # by YouTube -- see README's "YouTube creator digest".
+          YOUTUBE_DIGEST_ENABLED: ${{ vars.YOUTUBE_DIGEST_ENABLED || 'false' }}
+          YOUTUBE_CHANNELS: ${{ vars.YOUTUBE_CHANNELS }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}

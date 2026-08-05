@@ -6,3 +6,4 @@ ollama>=0.4.0
 pytest>=8.0.0
 supabase>=2.0.0
 matplotlib>=3.8.0
+youtube-transcript-api>=1.2.0

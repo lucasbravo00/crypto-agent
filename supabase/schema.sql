@@ -132,3 +132,23 @@ create table if not exists account_ticks (
     -- from a single bullet's collateral.
     liquidation_price numeric
 );
+
+-- YouTube videos from the creators you follow (see src/creators.py).
+-- Every video seen is recorded, including non-crypto ones, so the same
+-- off-topic upload isn't re-downloaded and re-judged on every run.
+-- `summary` is the short synthesized take -- never the raw transcript.
+create table if not exists creator_videos (
+    id bigint generated always as identity primary key,
+    created_at timestamptz not null default now(),
+    channel_id text not null,
+    channel_name text,
+    video_id text not null unique,   -- YouTube's own id; the dedup key
+    title text,
+    published_at timestamptz,
+    is_crypto boolean not null default false,
+    summary text,
+    reported_at timestamptz
+);
+
+create index if not exists creator_videos_published_idx
+    on creator_videos (published_at desc);

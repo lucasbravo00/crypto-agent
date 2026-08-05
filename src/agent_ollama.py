@@ -46,7 +46,7 @@ from datetime import datetime, timezone
 
 import ollama
 
-from . import bullets, market_data, memory
+from . import bullets, creators, market_data, memory
 
 # Trigger phrases for a leaked "meta-commentary" preamble -- the model
 # narrating its own answering process instead of just answering.
@@ -216,6 +216,26 @@ def _log(event: dict) -> None:
         f.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
 
 
+def summarize(system_prompt: str, user_text: str, max_tokens: int = 300) -> str:
+    """One-shot completion with NO tools and no agent loop -- the local
+    counterpart of agent.summarize(), same contract (see its docstring).
+
+    `max_tokens` maps to Ollama's num_predict. The leaked-preamble
+    stripper is applied here too: the same local model that narrated its
+    own answering process into the daily report will happily do it to a
+    video summary as well.
+    """
+    response = ollama.chat(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text},
+        ],
+        options={"num_predict": max_tokens},
+    )
+    return _strip_leaked_preamble((response.message.content or "").strip())
+
+
 def _run_subagent(
     role: str,
     tool_functions: list,
@@ -306,7 +326,8 @@ def run_daily_report(symbol: str = "BTC/USDT") -> str:
     # answering. Rule 0 of the prompt above asks it not to; this catches
     # what slips through anyway (see _strip_leaked_preamble's docstring).
     market_text = _strip_leaked_preamble(market_text)
-    alert = bullets.get_daily_alert()
-    if not alert:
-        return market_text
-    return f"{market_text}\n\n{alert}"
+    # Both extras are optional and independently best-effort: each
+    # returns None rather than raising, so a quiet day (or a broken
+    # YouTube feed) simply leaves that section out of the report.
+    sections = [market_text, bullets.get_daily_alert(), creators.get_creator_digest()]
+    return "\n\n".join(s for s in sections if s)
