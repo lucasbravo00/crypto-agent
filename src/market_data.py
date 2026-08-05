@@ -81,6 +81,31 @@ def _rsi(closes: list[float], period: int = 14) -> Optional[float]:
     return round(100 - (100 / (1 + rs)), 2)
 
 
+def _rsi_zone(value: Optional[float]) -> Optional[str]:
+    """Deterministic classification of an RSI reading, computed here so
+    the model reports a fact instead of reconstructing RSI's own
+    directional convention live in prose.
+
+    This exists because of a real, delivered report: "la RSI14 se
+    encuentra en un nivel bajo (39.0), lo que podría indicar sobrecompra"
+    -- a low RSI called overbought, exactly backwards (low RSI means
+    price has been falling -- oversold, if anything; overbought is the
+    HIGH end). Same lesson as everywhere else in this project: a
+    directional fact with a fixed, checkable rule shouldn't be left to a
+    model to re-derive each time -- compute it once, correctly, and hand
+    over the label.
+
+    Standard thresholds: <30 oversold, >70 overbought, else neutral.
+    """
+    if value is None:
+        return None
+    if value < 30:
+        return "oversold"
+    if value > 70:
+        return "overbought"
+    return "neutral"
+
+
 def get_indicators(symbol: str = "BTC/USDT", timeframe: str = "1d") -> dict:
     """Compute objective technical indicators from real candles.
     No interpretation or prediction: it only returns verifiable numbers
@@ -108,6 +133,7 @@ def get_indicators(symbol: str = "BTC/USDT", timeframe: str = "1d") -> dict:
             round((last_close - sma200) / sma200 * 100, 2) if sma200 else None
         ),
         "rsi_14": rsi14,
+        "rsi_14_zone": _rsi_zone(rsi14),
     }
 
 
@@ -168,6 +194,7 @@ def get_cycle_metrics(symbol: str = "BTC/USDT") -> dict:
         "high_available_history": high,
         "drawdown_from_high_pct": round((last - high) / high * 100, 2),
         "weekly_rsi_14": _rsi(w_closes, 14),
+        "weekly_rsi_14_zone": _rsi_zone(_rsi(w_closes, 14)),
     }
 
 def get_trailing_high_drawdown(symbol: str = "BTC/USDT", lookback_days: int = 90) -> dict:
@@ -214,6 +241,115 @@ def get_trailing_high_drawdown(symbol: str = "BTC/USDT", lookback_days: int = 90
         "trailing_high": round(trailing_high, 2),
         "current_price": current_price,
         "drawdown_from_trailing_high_pct": round((current_price - trailing_high) / trailing_high * 100, 2),
+    }
+
+
+def get_volume_profile(symbol: str = "BTC/USDT", lookback_days: int = 90, bins: int = 50) -> dict:
+    """Volume Profile Visible Range (VPVR): how much trading volume
+    happened at each PRICE level over the lookback window, rather than
+    over time. Two things fall out of it:
+
+    - point_of_control: the price level with the MOST volume traded --
+      the price the market has spent the most time agreeing on, often
+      acting as a magnet/support-resistance level.
+    - value_area_high/low: the band containing ~70% of the window's
+      volume (the standard VPVR convention), built by expanding outward
+      from the point of control one bin at a time toward whichever
+      neighbor has more volume.
+
+    Approximation, documented: real VPVR uses tick-level trade prints;
+    without that, a candle's volume is distributed UNIFORMLY across its
+    own high-low range (weighted by how much of each price bin the
+    candle's range covers). This is the standard approach every VPVR
+    tool built on OHLCV-only data uses, and it is directional, not exact
+    -- same spirit as get_predictive_ranges' own approximation note.
+
+    Args:
+        symbol: Trading pair in BASE/QUOTE format, e.g. "BTC/USDT".
+        lookback_days: Size of the window, in days.
+        bins: How many price levels to bucket the range into.
+    """
+    candles = get_ohlcv(symbol, timeframe="1d", limit=lookback_days)
+    if not candles:
+        return {
+            "symbol": symbol, "lookback_days": lookback_days,
+            "point_of_control": None, "value_area_high": None,
+            "value_area_low": None, "current_price": None,
+            "position_vs_value_area": None,
+        }
+
+    lo = min(c[3] for c in candles)   # candle[3] = low
+    hi = max(c[2] for c in candles)   # candle[2] = high
+    if hi <= lo:
+        # Degenerate but real (a market that didn't move at all over the
+        # window): every price IS lo, not "lo plus half a synthetic bin".
+        current_price = get_price(symbol)["last_price"]
+        return {
+            "symbol": symbol, "lookback_days": lookback_days,
+            "point_of_control": round(lo, 2), "value_area_high": round(lo, 2),
+            "value_area_low": round(lo, 2), "current_price": current_price,
+            "position_vs_value_area": "inside_value_area",
+        }
+    bin_size = (hi - lo) / bins
+
+    volume_by_bin = [0.0] * bins
+    for _, _, c_high, c_low, _, c_vol in candles:
+        if c_vol <= 0:
+            continue
+        span = c_high - c_low
+        first_bin = max(0, min(bins - 1, int((c_low - lo) / bin_size)))
+        last_bin = max(0, min(bins - 1, int((c_high - lo) / bin_size)))
+        if span <= 0 or first_bin == last_bin:
+            volume_by_bin[first_bin] += c_vol
+            continue
+        # Split this candle's volume across every bin it spans,
+        # proportional to how much of the candle's OWN range falls in
+        # each bin -- the "uniform distribution" approximation.
+        for b in range(first_bin, last_bin + 1):
+            bin_lo = max(c_low, lo + b * bin_size)
+            bin_hi = min(c_high, lo + (b + 1) * bin_size)
+            overlap = max(0.0, bin_hi - bin_lo)
+            volume_by_bin[b] += c_vol * (overlap / span)
+
+    def bin_price(index: int) -> float:
+        return round(lo + (index + 0.5) * bin_size, 2)
+
+    total_volume = sum(volume_by_bin)
+    poc_index = max(range(bins), key=lambda i: volume_by_bin[i])
+
+    # Value area: expand outward from the point of control, one bin at a
+    # time, always taking whichever open neighbor carries more volume --
+    # the standard construction, not a fixed +/-N% band around the POC.
+    low_i = high_i = poc_index
+    covered = volume_by_bin[poc_index]
+    target = total_volume * 0.70
+    while covered < target and (low_i > 0 or high_i < bins - 1):
+        next_low = volume_by_bin[low_i - 1] if low_i > 0 else -1.0
+        next_high = volume_by_bin[high_i + 1] if high_i < bins - 1 else -1.0
+        if next_high >= next_low:
+            high_i += 1
+            covered += next_high
+        else:
+            low_i -= 1
+            covered += next_low
+
+    current_price = get_price(symbol)["last_price"]
+    vah, val = bin_price(high_i), bin_price(low_i)
+    if current_price > vah:
+        position = "above_value_area"
+    elif current_price < val:
+        position = "below_value_area"
+    else:
+        position = "inside_value_area"
+
+    return {
+        "symbol": symbol,
+        "lookback_days": lookback_days,
+        "point_of_control": bin_price(poc_index),
+        "value_area_high": vah,
+        "value_area_low": val,
+        "current_price": current_price,
+        "position_vs_value_area": position,
     }
 
 

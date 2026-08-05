@@ -42,6 +42,12 @@ src/
                              cycle metrics (200w SMA, Mayer Multiple, drawdown,
                              weekly RSI), fear & greed, BTC dominance
                              (BingX/CoinGecko), all with retry logic.
+                             get_indicators()/get_cycle_metrics() also return a
+                             PRE-COMPUTED rsi_14_zone/weekly_rsi_14_zone label
+                             (oversold/neutral/overbought) -- see "Design
+                             decisions" for the real backwards-RSI bug this
+                             replaced. get_volume_profile() computes VPVR (see
+                             "Volume Profile (VPVR)" below).
                              get_trailing_high_drawdown() computes % below a
                              trailing N-day high (90d/-5% by default, matching
                              the backtest's own validated de-risking bar) --
@@ -101,7 +107,8 @@ src/
                              alert from bullets.get_daily_alert()
   agent_ollama.py           -> the SAME design on a local model via Ollama
 tests/
-  test_logic.py            -> unit tests for market_data/strategy_tools (no network, no LLM)
+  test_logic.py            -> unit tests for market_data/strategy_tools (no network,
+                             no LLM), incl. the VPVR volume-split math and RSI zones
   test_bullets.py          -> unit tests for the bullet state machine, including sync
                              and reconciliation (isolated temp state, Supabase/BingX
                              force-disabled regardless of the ambient environment)
@@ -273,6 +280,40 @@ supabase/migration_*.sql   -> incremental migrations, run in order if your proje
   real runs stayed on-topic and leak-free but ran 42-76 words across
   4-5 sentences each, not the 3-4 asked for. `LLM_BACKEND=claude` follows
   it far more reliably; this is the known cost of the free, local option.
+- **RSI direction, fixed 2026-08-05.** A real, delivered report said "la
+  RSI14 se encuentra en un nivel bajo (39.0), lo que podría indicar
+  sobrecompra" — a low RSI called overbought, exactly backwards (low RSI
+  means price has been falling; overbought is the HIGH end). Same lesson
+  as the leaked-preamble bug above: a directional fact with a fixed,
+  checkable rule shouldn't be re-derived by a model every time.
+  `market_data._rsi_zone()` now computes `rsi_14_zone` /
+  `weekly_rsi_14_zone` ("oversold" | "neutral" | "overbought", standard
+  <30/>70 thresholds) alongside the raw numbers, and rule 5 of the
+  prompt tells the model to use that label directly — with the exact
+  backwards example inline, same pattern as the preamble fix.
+- **Genuine interpretation, not a per-indicator readout** (rule 6, added
+  2026-08-05). The prompt now explicitly asks the model to connect what
+  the signals say TOGETHER (e.g. price below its volume-profile point of
+  control while sentiment is fearful reads differently than the same
+  price above it with sentiment neutral) into one coherent take, instead
+  of a list of "X is at Y, Z is at W". The word budget moved from ~70 to
+  ~90 to give that synthesis (and, when present, the creator-context
+  weave-in below) room to breathe.
+- **YouTube creator context is now fed to the Market Analyst, not
+  appended as a separate block** (changed 2026-08-05). Previously
+  `run_daily_report()` concatenated `creators.get_creator_digest()`'s
+  output onto the report mechanically, disconnected from the market
+  analysis. It's now passed as "CREATOR CONTEXT" in the sub-agent's user
+  message, with an explicit rule (9) asking the model to weave it into
+  the SAME interpretation if genuinely relevant — attributed, never as
+  fact or a signal, and not to lead the report with it. Verified against
+  a real creator summary (CriptoNorber, fetched after the IP block from
+  2026-08-04 lifted): the model correctly attributed and never turned it
+  into advice in every run, but inconsistently honored "don't lead with
+  it" — one run opened with the creator's take instead of the market
+  data. Same class of limitation as the length/sentence-count budget
+  above: a style preference the local model doesn't reliably follow;
+  `LLM_BACKEND=claude` is expected to honor it better.
 - **Retries with backoff** on all network calls (public APIs fail
   sporadically).
 - **Structured JSONL logging** of every tool call, its input and its
@@ -420,6 +461,43 @@ back to `.plist` and `launchctl bootstrap` it.
 catches up missed runs on wake). The daily report no longer depends on
 that — but with `LLM_BACKEND=ollama` a *local* `python main.py report`
 still needs the Ollama app running.
+
+## Volume Profile (VPVR)
+
+`market_data.get_volume_profile()` computes a Volume Profile Visible
+Range over the last 90 days: how much volume traded at each PRICE level
+(not over time). Two numbers fall out of it and feed the daily report:
+
+- **`point_of_control`**: the price level with the MOST volume traded —
+  where the market has spent the most time agreeing on value, often
+  acting as a magnet/support-resistance level.
+- **`value_area_high`/`value_area_low`**: the band holding ~70% of the
+  window's volume (the standard VPVR convention), built by expanding
+  outward from the point of control one bin at a time toward whichever
+  neighbor carries more volume — not a fixed `±N%` band around it.
+- **`position_vs_value_area`**: a PRE-COMPUTED label
+  (`above_value_area` | `inside_value_area` | `below_value_area`), same
+  "compute the fact once, hand over the label" pattern as the RSI zone
+  fix above.
+
+**Documented approximation**: real VPVR uses tick-level trade prints;
+without that, a candle's volume is spread UNIFORMLY across its own
+high-low range, weighted by how much of each price bin the candle's
+range overlaps. This is the standard approach every VPVR tool built on
+OHLCV-only data uses — directional, not exact, same spirit as
+`get_predictive_ranges`' own approximation note. Verified against real
+BTC/USDT data (point of control $63,972 against a real 90-day range of
+$57,806–$82,471) and against hand-computed synthetic cases in
+`test_logic.py` (an isolated volume spike must not pull the value area
+toward it; a candle spanning the whole visible range splits its volume
+evenly across every bin it touches, not into one bin; a perfectly flat
+price returns that single price exactly, not "price plus half a
+synthetic bin" — a real edge case hit while building this).
+
+As with Predictive Ranges, Ollama's auto-generated tool schema would
+expose `lookback_days`/`bins` for the model to invent values for, so
+`agent_ollama.py` wraps it in a thin function exposing only `symbol` —
+same fix as `get_predictive_ranges`' own wrapper, same reason.
 
 ## YouTube creator digest
 

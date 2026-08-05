@@ -129,6 +129,21 @@ def get_predictive_ranges(symbol: str = "BTC/USDT") -> dict:
     return market_data.get_predictive_ranges(symbol)
 
 
+def get_volume_profile(symbol: str = "BTC/USDT") -> dict:
+    """Volume Profile Visible Range (VPVR) over the last 90 days: the
+    point_of_control (the price level with the MOST traded volume --
+    often acts as a magnet/support-resistance level) and the
+    value_area_high/low (the price band holding ~70% of that volume).
+    position_vs_value_area is a PRE-COMPUTED label -- use it directly.
+    Approximation, same spirit as get_predictive_ranges.
+
+    A thin wrapper for the SAME reason as get_predictive_ranges above:
+    hides market_data.get_volume_profile's `lookback_days`/`bins`
+    parameters so Ollama's auto-generated schema can't expose them for
+    the model to invent values for. Only `symbol` is exposed on purpose."""
+    return market_data.get_volume_profile(symbol)
+
+
 # We pass the real Python functions directly: Ollama builds the schema
 # on its own by reading each function's type hints + docstring.
 MARKET_TOOL_FUNCTIONS = [
@@ -139,6 +154,7 @@ MARKET_TOOL_FUNCTIONS = [
     market_data.get_fear_greed_index,
     market_data.get_btc_dominance,
     get_predictive_ranges,
+    get_volume_profile,
     memory.get_market_memory,
 ]
 MARKET_REQUIRED_TOOLS = {fn.__name__ for fn in MARKET_TOOL_FUNCTIONS}
@@ -170,39 +186,60 @@ nothing about the user's own portfolio, that's a separate sub-agent.
 1. You MUST call every one of these tools before writing your answer:
    get_current_date, get_price, get_indicators, get_cycle_metrics,
    get_fear_greed_index, get_btc_dominance, get_predictive_ranges,
-   get_market_memory. Do not skip any.
+   get_volume_profile, get_market_memory. Do not skip any.
 2. NEVER state or imply a date/year from memory.
 3. THE ONLY INDICATORS THAT EXIST FOR YOU are exactly what those tools
    returned: SMA50, SMA200, RSI14 (daily), weekly RSI14, Mayer Multiple,
-   distance to the 200-week SMA, Fear & Greed, BTC dominance, and the
+   distance to the 200-week SMA, Fear & Greed, BTC dominance, the
    Predictive Ranges levels (average/resistance_1/resistance_2/
-   support_1/support_2). There is no EMA, no Fibonacci, no MACD, no
-   Bollinger Bands, no "next week" price projection anywhere in this
-   system — if it isn't in that list, it does not exist; do not mention
-   it, infer it, or estimate it, under any circumstance. This rule
-   overrides the style instruction below: a shorter, wrong report is
+   support_1/support_2), and the Volume Profile (point_of_control,
+   value_area_high, value_area_low). There is no EMA, no Fibonacci, no
+   MACD, no Bollinger Bands, no "next week" price projection anywhere in
+   this system — if it isn't in that list, it does not exist; do not
+   mention it, infer it, or estimate it, under any circumstance. This
+   rule overrides the style instruction below: a shorter, wrong report is
    worse than a shorter, correct one.
 4. get_btc_dominance returns BITCOIN's dominance specifically — never
-   attribute it to another coin. get_predictive_ranges levels are an
-   approximation (limited chart history) — directional, not exact.
-5. WRITE LIKE A SHARP TRADER TEXTING A QUICK TAKE, not a data report.
-   3-4 short sentences, TOTAL. No numbers dump, no listing every
-   indicator you called — pick only what's actually notable today
-   (FROM THE REAL LIST IN RULE 3 ONLY) and weave it into plain language,
-   the way a person would describe the market to a friend, not a
-   spreadsheet. Use get_market_memory's trend labels to say what
-   CHANGED, not just where things sit — that's usually the more
-   interesting part.
-6. NEVER give buy/sell signals, never say something is "a good time to
+   attribute it to another coin. get_predictive_ranges and
+   get_volume_profile levels are approximations — directional, not exact.
+5. RSI direction is FIXED and pre-labeled — use rsi_14_zone /
+   weekly_rsi_14_zone directly, never re-derive it from the raw number:
+   "oversold" means RSI is LOW (price has been falling, a potential
+   bottoming signal); "overbought" means RSI is HIGH (a potential topping
+   signal); "neutral" is neither. A real delivered report once said a low
+   RSI (39) meant "sobrecompra" (overbought) — exactly backwards. Getting
+   this wrong is worse than not mentioning RSI at all.
+6. WRITE LIKE A SHARP TRADER TEXTING A QUICK TAKE, not a data report.
+   3-5 short sentences, TOTAL. This is meant to be a genuine
+   INTERPRETATION, not a per-indicator readout: connect what the signals
+   say TOGETHER (e.g. price sitting below its point of control while
+   sentiment is fearful reads differently than the same price above it
+   with sentiment neutral) into one coherent take, the way a person would
+   explain the market to a friend — not a spreadsheet, and not a list of
+   "X is at Y, Z is at W". Use get_market_memory's trend labels to say
+   what CHANGED, not just where things sit — that's usually the more
+   interesting part. Pick only what's actually notable today (FROM THE
+   REAL LIST IN RULE 3 ONLY); you do not need to mention every indicator.
+7. NEVER give buy/sell signals, never say something is "a good time to
    buy/sell" or "an opportunity", and never state or imply a future
    price, target, or projection (there is no such tool, so any number
    you'd give would be invented) — that call belongs to the user alone.
    A historically extreme reading can be noted as a fact, never as a
    signal to act on.
-7. If genuinely nothing changed and nothing looks notable, say that
+8. If genuinely nothing changed and nothing looks notable, say that
    plainly in one short line instead of padding with numbers.
+9. You may be given CREATOR CONTEXT in the user message: a short,
+   already-synthesized take from a crypto YouTuber the user follows, about
+   a video they published today. If present, and only if it genuinely
+   adds something, weave it into your interpretation as one more input —
+   explicitly attributed to that creator (e.g. "X argues that...", "según
+   X..."), NEVER presented as fact, as your own analysis, or as a signal
+   to act on. It is one opinion among your other inputs, not a
+   headline — do not lead the report with it, and do not repeat it if it
+   says nothing beyond what the data already shows. If no creator context
+   is given, say nothing about it.
 
-Max ~70 words, TOTAL. Plain text, no markdown headers, no bullet lists,
+Max ~90 words, TOTAL. Plain text, no markdown headers, no bullet lists,
 no headers, no "Section:" labels — just the take, like a text message.
 Write in this language (ISO code): {language}."""
 
@@ -313,11 +350,25 @@ def run_daily_report(symbol: str = "BTC/USDT") -> str:
     (don't rely on a prompt for behavior code can guarantee instead).
     The dashboard already shows full DCA/bullet detail, so there's
     nothing here worth an LLM's judgment call on: it's a fixed
-    threshold, checked in Python, worded as a template string."""
+    threshold, checked in Python, worded as a template string.
+
+    The YouTube creator digest (see creators.py) is fetched HERE and
+    handed to the Market Analyst as extra context in its user message,
+    not appended afterward as its own separate block -- see agent.py's
+    run_daily_report() docstring for why (same design, mirrored here).
+    Rule 9 of the prompt is what keeps this from turning into a signal or
+    an unattributed claim."""
+    creator_context = creators.get_creator_digest()
+    user_message = f"Build the market-context section of the daily report for {symbol}."
+    if creator_context:
+        user_message += (
+            "\n\nCREATOR CONTEXT (see rule 9): a synthesis of a new video "
+            f"from a creator the user follows, published today:\n{creator_context}"
+        )
+
     market_text = _run_subagent(
         "market_analyst", MARKET_TOOL_FUNCTIONS, MARKET_REQUIRED_TOOLS,
-        _market_analyst_prompt(),
-        f"Build the market-context section of the daily report for {symbol}.",
+        _market_analyst_prompt(), user_message,
     )
     # Safety net for a real, observed failure (2026-08-01): after several
     # rounds of "you still need to call these tools" nudging, this local
@@ -326,8 +377,7 @@ def run_daily_report(symbol: str = "BTC/USDT") -> str:
     # answering. Rule 0 of the prompt above asks it not to; this catches
     # what slips through anyway (see _strip_leaked_preamble's docstring).
     market_text = _strip_leaked_preamble(market_text)
-    # Both extras are optional and independently best-effort: each
-    # returns None rather than raising, so a quiet day (or a broken
-    # YouTube feed) simply leaves that section out of the report.
-    sections = [market_text, bullets.get_daily_alert(), creators.get_creator_digest()]
-    return "\n\n".join(s for s in sections if s)
+    # Best-effort: returns None rather than raising, so a quiet day simply
+    # leaves this section out of the report.
+    alert = bullets.get_daily_alert()
+    return f"{market_text}\n\n{alert}" if alert else market_text
