@@ -66,12 +66,27 @@ CHANNEL_PAGE_URL = "https://www.youtube.com/{handle}"
 # (confirmed while building this -- it dated the newest video to 2019).
 NS = {"a": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015"}
 
-# How far back a video can be and still be worth mentioning. The report
-# is daily; a 2-day window covers a missed run without digging up old news.
-MAX_VIDEO_AGE_DAYS = 2
-# Hard cap on how many NEW videos are processed per run, so a channel
-# posting a burst can't turn one report into a dozen LLM calls.
-MAX_VIDEOS_PER_RUN = 3
+# How far back a video can be and still be worth mentioning.
+#
+# Two weeks, not two days, BECAUSE Shorts are excluded (see is_short).
+# Creators post Shorts far more often than full videos: measured on
+# CriptoNorber, the newest full video was 11 days old while four Shorts
+# had gone up in the meantime. A 2-day window plus a no-Shorts rule left
+# the channel permanently silent. The dedup table is what stops repeats;
+# this window only stops the digest dredging up genuinely stale content
+# when a channel goes quiet.
+MAX_VIDEO_AGE_DAYS = 14
+
+# Only ONE video per channel per run -- the newest full one. Shorts are
+# recaps of the full videos, so they add nothing but noise and duplicate
+# the same ideas across the report.
+#
+# How many feed entries to walk per channel while looking for that newest
+# full video. Each check is one HEAD request, and a channel can post a
+# run of Shorts before its last real video (CriptoNorber had four in a
+# row), so this needs headroom -- but bounded, so a Shorts-only channel
+# can't cost an unbounded number of requests.
+MAX_FEED_ENTRIES_SCANNED = 10
 # Transcripts run to tens of thousands of characters; only the first
 # slice is sent to the model. The opening minutes are where these videos
 # state their thesis, and this bounds both cost and context use.
@@ -202,6 +217,56 @@ def _is_recent(published_at: Optional[str]) -> bool:
     except ValueError:
         return False
     return published >= datetime.now(timezone.utc) - timedelta(days=MAX_VIDEO_AGE_DAYS)
+
+
+def is_short(video_id: str) -> bool:
+    """True if the video is a YouTube Short.
+
+    The RSS feed carries no duration and there is no keyless API for it,
+    so this uses YouTube's own routing: request /shorts/<id> WITHOUT
+    following redirects. A real Short stays there (200); a full-length
+    video is redirected (303) to /watch?v=<id>. Verified against a real
+    channel feed -- it separated four Shorts from a full video correctly,
+    and agreed with two independently-known full videos.
+
+    Fails OPEN (returns False, "not a Short") when the check itself
+    fails. A network blip should not silently make every video look like
+    a Short and empty the digest; the worst case of the other direction
+    is one recap video in the report.
+    """
+    try:
+        resp = requests.head(
+            f"https://www.youtube.com/shorts/{video_id}",
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=15,
+            allow_redirects=False,
+        )
+        return resp.status_code == 200
+    except Exception as exc:
+        print(f"⚠️ Could not check whether {video_id} is a Short: {exc}")
+        return False
+
+
+def latest_full_video(channel_id: str) -> Optional[dict]:
+    """The channel's newest NON-Short video inside the age window, or None.
+
+    Deliberately returns at most one: Shorts are recaps of the full
+    videos, so pulling several items from one channel would repeat the
+    same ideas across the report.
+    """
+    try:
+        videos = fetch_channel_videos(channel_id)
+    except Exception as exc:
+        print(f"⚠️ Could not read feed for channel {channel_id}: {exc}")
+        return None
+
+    for video in videos[:MAX_FEED_ENTRIES_SCANNED]:
+        if not _is_recent(video["published_at"]):
+            break   # feed is newest-first, so everything after is older too
+        if is_short(video["video_id"]):
+            continue
+        return video
+    return None
 
 
 def fetch_transcript(video_id: str) -> Optional[str]:
@@ -431,25 +496,24 @@ def get_creator_digest() -> Optional[str]:
 
 
 def _build_digest() -> Optional[str]:
+    # Exactly one candidate per channel: its newest full video. If that
+    # one was already covered on a previous run, this channel simply has
+    # nothing new to say -- the digest does NOT walk further back for a
+    # second-newest video it hasn't reported yet.
     candidates: list[dict] = []
     for entry in _configured_channels():
         channel_id = resolve_channel_id(entry)
         if not channel_id:
             continue
-        try:
-            videos = fetch_channel_videos(channel_id)
-        except Exception as exc:
-            print(f"⚠️ Could not read feed for channel {entry}: {exc}")
-            continue
-        candidates.extend(v for v in videos if _is_recent(v["published_at"]))
+        video = latest_full_video(channel_id)
+        if video:
+            candidates.append(video)
 
     if not candidates:
         return None
 
-    # Newest first, then drop anything already handled on a previous run.
-    candidates.sort(key=lambda v: v["published_at"] or "", reverse=True)
     already_seen = _seen_video_ids([v["video_id"] for v in candidates])
-    fresh = [v for v in candidates if v["video_id"] not in already_seen][:MAX_VIDEOS_PER_RUN]
+    fresh = [v for v in candidates if v["video_id"] not in already_seen]
 
     lines = []
     for video in fresh:

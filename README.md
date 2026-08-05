@@ -518,27 +518,62 @@ Note the corollary: the classifier only sees the first
 minutes on something else before turning to crypto will read as
 non-crypto. That's a deliberate cost bound, not an oversight.
 
-`MAX_VIDEOS_PER_RUN` (3) caps how many new videos one run will process,
-newest first. With several channels posting daily, the oldest candidates
-inside the 2-day window can fall off the end — by design, since the
-report is meant to stay short.
+### Shorts are excluded, one full video per channel
 
-### ⚠️ Known risk: transcripts from a datacenter IP
+Shorts are recaps of the full videos, so including them would repeat the
+same ideas and crowd out the actual content. The RSS feed carries no
+duration and there is no keyless API for it, so `is_short()` uses
+YouTube's own routing: request `/shorts/<id>` **without following
+redirects** — a real Short stays there (`200`), a full video is
+redirected (`303`) to `/watch?v=`. Verified against a live channel feed,
+where it separated four consecutive Shorts from the full video behind
+them.
 
-**Untested in production as of 2026-08-04.** YouTube throttles and
-sometimes blocks caption requests from datacenter IPs, and the daily
-report runs on GitHub Actions. The library reports this as
-`IpBlocked` / `RequestBlocked` / `PoTokenRequired`; `creators.py` treats
-it like any other failure — the section is skipped and the report goes
-out normally — so the failure mode is "this feature quietly does
-nothing", not a broken report.
+Each run takes **at most one video per channel: its newest full one**. If
+that video was already covered, that channel contributes nothing — the
+digest does *not* walk further back looking for an older unreported one.
 
-Verified working from a **residential** IP (a real Coin Bureau video,
-13,338 characters of transcript). To find out whether your Actions runner
-is blocked, enable the feature and check that run's log for
-`⚠️ No transcript for video …: IpBlocked`. If it is blocked, the fallback
-is to run `python main.py report` from the Mac (where it's known to work)
-instead of from Actions.
+This is why `MAX_VIDEO_AGE_DAYS` is **14** and not 2. Creators post
+Shorts far more often than full videos: measured on CriptoNorber, the
+newest full video was 11 days old while four Shorts had gone up in the
+meantime. A two-day window plus a no-Shorts rule left the channel
+permanently silent. Dedup is what prevents repeats; the window only stops
+the digest dredging up stale content when a channel goes quiet.
+
+`is_short()` fails **open** (treats a failed check as "not a Short"): a
+network blip should not make every video look like a Short and silently
+empty the digest.
+
+### ⚠️ The real constraint: YouTube rate-limits transcript requests
+
+**Confirmed 2026-08-04, from a residential IP.** Transcripts fetched
+fine all afternoon (a 13,338-character Coin Bureau video, a
+31,712-character Alex Ruiz one, several Spanish Shorts) and then, after
+roughly twenty fetches in about an hour of testing, every request started
+coming back `IpBlocked` — including for videos that had downloaded
+seconds earlier. An immediate retry stayed blocked; it clears with time.
+
+Two things follow, and they point in opposite directions:
+
+- **Normal operation is far below that.** One video per channel per day
+  — three requests daily for three channels. The block was caused by
+  test volume, not by the feature's real duty cycle.
+- **GitHub Actions is a much worse position.** Runners use shared
+  datacenter IPs that may arrive already throttled by someone else's
+  traffic, with nothing this code can do about it.
+
+`creators.py` treats every one of these as an ordinary failure — the
+section is skipped, the report goes out normally — so the failure mode is
+"the digest quietly says nothing", never a broken report. `fetch_transcript()`
+also does not record a video it couldn't transcribe, so a blocked day is
+retried on the next run rather than silently marked as handled.
+
+To find out where your Actions runner stands, enable the feature and grep
+that run's log for `IpBlocked`. If it is blocked there, the fallback is to
+run `python main.py report` from the Mac. Note the deeper implication: a
+feature depending on an endpoint that can throttle without warning is
+inherently best-effort, which is exactly why it is wired as an optional
+section rather than something the report depends on.
 
 ## Report chart
 

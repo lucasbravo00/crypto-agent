@@ -165,9 +165,12 @@ def test_looks_crypto_keeps_the_stricter_bar_for_long_transcripts():
 
 # --- stage 2 + assembly ---
 
-def _patch_pipeline(monkeypatch, *, transcript, summary, recorded=None):
-    """Wire the whole pipeline with stubs; collect what got recorded."""
+def _patch_pipeline(monkeypatch, *, transcript, summary, recorded=None, shorts=()):
+    """Wire the whole pipeline with stubs; collect what got recorded.
+    `shorts` lists video ids to treat as Shorts (everything else is a
+    full video). Stubbed because the real check is an HTTP HEAD."""
     monkeypatch.setattr(creators.requests, "get", lambda *a, **k: _Resp(FEED_XML))
+    monkeypatch.setattr(creators, "is_short", lambda vid: vid in shorts)
     monkeypatch.setattr(creators, "_is_recent", lambda p: p is not None and p.startswith("2026"))
     monkeypatch.setattr(creators, "fetch_transcript", lambda vid: transcript)
     monkeypatch.setattr(creators, "_summarize_with_llm", lambda *a, **k: summary)
@@ -231,7 +234,9 @@ def test_digest_skips_videos_already_seen(monkeypatch):
     assert creators.get_creator_digest() is None
 
 
-def test_digest_caps_how_many_videos_it_processes(monkeypatch):
+def test_digest_takes_only_one_video_per_channel(monkeypatch):
+    """One line per channel at most: Shorts recap the full videos, so
+    pulling several items from the same creator repeats the same ideas."""
     many = "".join(
         f"<entry><yt:videoId>v{i}</yt:videoId><title>Bitcoin {i}</title>"
         f"<published>2026-08-04T12:00:00+00:00</published></entry>"
@@ -241,6 +246,7 @@ def test_digest_caps_how_many_videos_it_processes(monkeypatch):
             '<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015" '
             'xmlns="http://www.w3.org/2005/Atom"><title>C</title>' + many + "</feed>")
     monkeypatch.setattr(creators.requests, "get", lambda *a, **k: _Resp(feed))
+    monkeypatch.setattr(creators, "is_short", lambda vid: False)
     monkeypatch.setattr(creators, "_is_recent", lambda p: True)
     monkeypatch.setattr(creators, "fetch_transcript", lambda vid: "bitcoin ethereum halving")
     monkeypatch.setattr(creators, "_summarize_with_llm", lambda *a, **k: "s")
@@ -249,7 +255,73 @@ def test_digest_caps_how_many_videos_it_processes(monkeypatch):
     monkeypatch.setattr(creators.db, "is_enabled", lambda: True)
 
     digest = creators.get_creator_digest()
-    assert len(digest.splitlines()) == creators.MAX_VIDEOS_PER_RUN
+    assert len(digest.splitlines()) == 1, "one configured channel -> at most one line"
+
+
+# --- Shorts exclusion ---
+# Shorts are recaps of the full videos, so they add no new ideas and would
+# duplicate content across the report.
+
+def test_latest_full_video_skips_over_shorts(monkeypatch):
+    """Real shape: CriptoNorber had four Shorts in a row before its last
+    full video, so the scan has to walk past them, not give up at the
+    newest entry."""
+    monkeypatch.setattr(creators.requests, "get", lambda *a, **k: _Resp(FEED_XML))
+    monkeypatch.setattr(creators, "_is_recent", lambda p: True)
+    monkeypatch.setattr(creators, "is_short", lambda vid: vid == "vid_new")
+    got = creators.latest_full_video("UC123")
+    assert got["video_id"] == "vid_old"
+
+
+def test_latest_full_video_returns_none_when_everything_is_a_short(monkeypatch):
+    monkeypatch.setattr(creators.requests, "get", lambda *a, **k: _Resp(FEED_XML))
+    monkeypatch.setattr(creators, "_is_recent", lambda p: True)
+    monkeypatch.setattr(creators, "is_short", lambda vid: True)
+    assert creators.latest_full_video("UC123") is None
+
+
+def test_latest_full_video_stops_at_the_age_window(monkeypatch):
+    """The feed is newest-first, so the first too-old entry means every
+    entry after it is older too -- no point checking (or paying a HEAD
+    request for) any of them."""
+    checked = []
+    monkeypatch.setattr(creators.requests, "get", lambda *a, **k: _Resp(FEED_XML))
+    monkeypatch.setattr(creators, "_is_recent", lambda p: False)
+    monkeypatch.setattr(creators, "is_short", lambda vid: checked.append(vid) or False)
+    assert creators.latest_full_video("UC123") is None
+    assert checked == [], "must not check Shorts for videos outside the window"
+
+
+def test_digest_skips_a_channel_whose_latest_full_video_was_already_covered(monkeypatch):
+    """'Only the latest video, as long as it wasn't taken already' -- it
+    does NOT walk further back looking for an older unreported one."""
+    _patch_pipeline(monkeypatch, transcript="bitcoin ethereum halving",
+                    summary="a summary", shorts=())
+    monkeypatch.setattr(creators, "_seen_video_ids", lambda ids: {"vid_new"})
+    assert creators.get_creator_digest() is None
+
+
+def test_is_short_fails_open_on_a_network_error(monkeypatch):
+    """A blip must not make every video look like a Short and silently
+    empty the digest."""
+    def boom(*a, **k):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(creators.requests, "head", boom)
+    assert creators.is_short("vid") is False
+
+
+def test_is_short_reads_the_redirect(monkeypatch):
+    """YouTube keeps a real Short on /shorts/ (200) and redirects a
+    full-length video (303) to /watch?v=."""
+    class _Head:
+        def __init__(self, code):
+            self.status_code = code
+
+    monkeypatch.setattr(creators.requests, "head", lambda *a, **k: _Head(200))
+    assert creators.is_short("a_short") is True
+    monkeypatch.setattr(creators.requests, "head", lambda *a, **k: _Head(303))
+    assert creators.is_short("a_full_video") is False
 
 
 # --- guardrails ---
