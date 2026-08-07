@@ -163,6 +163,24 @@ def test_looks_crypto_keeps_the_stricter_bar_for_long_transcripts():
     assert creators.looks_crypto("Trading con velas japonesas", long_text) is False
 
 
+def test_keyword_hits_use_word_boundaries_not_bare_substrings():
+    """Regression guard, from a real Alex Ruiz transcript. The old plain
+    `kw in text` check matched "defi" inside "en definitiva" (Spanish for
+    "in short") and "eth" inside "something" -- neither is a crypto
+    mention. Word-boundary matching must reject both."""
+    assert creators._distinct_keyword_hits("en definitiva no puede dedicar más tiempo") == 0
+    assert creators._distinct_keyword_hits("this is definitely something else entirely") == 0
+
+
+def test_keyword_hits_still_match_plural_forms():
+    """The word-boundary fix must not lose real hits: the same Alex Ruiz
+    video that exposed the "defi" false positive genuinely says
+    "criptomonedas" and "criptos" -- plurals of the singular keywords in
+    CRYPTO_KEYWORDS -- and those must still count."""
+    assert creators._distinct_keyword_hits("hablamos del mercado de las criptomonedas") == 1
+    assert creators._distinct_keyword_hits("si tú quieres operar criptos, o acciones") == 1
+
+
 # --- stage 2 + assembly ---
 
 def _patch_pipeline(monkeypatch, *, transcript, summary, recorded=None, shorts=()):

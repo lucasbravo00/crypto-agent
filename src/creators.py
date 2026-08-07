@@ -313,9 +313,32 @@ def fetch_transcript(video_id: str) -> Optional[str]:
         return None
 
 
+# Word-boundary patterns, not plain substring checks. A bare `kw in text`
+# check matches "defi" inside "en definitiva"/"definitely" and "eth"
+# inside "something" -- confirmed against REAL transcripts already
+# fetched during testing (both false positives fired, in both Spanish
+# and English videos, on ordinary words, not edge cases). `\b` requires
+# the keyword to start/end at a word boundary, which also does the right
+# thing for the multi-word phrases in CRYPTO_KEYWORDS ("on-chain", "etf
+# de bitcoin") since they start and end on word characters.
+#
+# A trailing optional "s" is allowed so plural forms count too
+# ("criptomonedas", "criptos", "altcoins", "wallets") -- without it, a
+# real Alex Ruiz video that only says "criptomonedas"/"criptos" (never
+# the bare singular) scored zero keyword hits, a false negative found
+# while verifying this fix against real transcripts. The trailing \b is
+# still enforced after the optional "s", so "defis?" still doesn't match
+# inside "definitiva" (no boundary between "defi" and the following "n").
+_KEYWORD_PATTERNS = {
+    kw: re.compile(r"\b" + re.escape(kw) + r"s?\b", re.IGNORECASE)
+    for kw in CRYPTO_KEYWORDS
+}
+
+
 def _distinct_keyword_hits(text: str) -> int:
-    lowered = (text or "").lower()
-    return len({kw for kw in CRYPTO_KEYWORDS if kw in lowered})
+    if not text:
+        return 0
+    return sum(1 for pattern in _KEYWORD_PATTERNS.values() if pattern.search(text))
 
 
 def _mentions_crypto(text: str) -> bool:

@@ -314,6 +314,24 @@ supabase/migration_*.sql   -> incremental migrations, run in order if your proje
   data. Same class of limitation as the length/sentence-count budget
   above: a style preference the local model doesn't reliably follow;
   `LLM_BACKEND=claude` is expected to honor it better.
+- **Creator-digest keyword matching used bare substrings, fixed
+  2026-08-06.** Found while manually auditing whether a real Alex Ruiz
+  video should have been included: `"defi" in text` matched inside "en
+  definitiva" (Spanish, "in short") and "eth" matched inside "something",
+  in both cases scoring a real, unrelated video as more crypto-relevant
+  than it was. `_distinct_keyword_hits()` now matches each keyword in
+  `CRYPTO_KEYWORDS` with a `\b`-bounded, case-insensitive regex instead
+  of plain substring search. A bare `\bkw\b` would have thrown out real
+  hits too — that same video genuinely says "criptomonedas" and
+  "criptos", plurals that don't contain the singular keyword as a whole
+  word — so the pattern allows an optional trailing "s"
+  (`\bcriptos?\b`), verified against the real transcript that exposed
+  the bug plus the earlier CriptoNorber/Coin Bureau transcripts to
+  confirm nothing legitimate was lost. This bug didn't change any actual
+  report outcome so far: even without the false "defi" hit the Alex Ruiz
+  video still had 4 genuine keyword matches, well above the stage-1 bar,
+  and stage 2's LLM classifier independently and correctly rejected it as
+  a general trading video where every crypto mention is incidental.
 - **Retries with backoff** on all network calls (public APIs fail
   sporadically).
 - **Structured JSONL logging** of every tool call, its input and its
